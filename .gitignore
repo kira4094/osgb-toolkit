@@ -1,0 +1,18 @@
+# 第三方依赖(1.9GB OSG 预编译, 不入库)
+thirdparty/
+
+# 测试输出/临时文件
+tests/
+*.obj
+*.fbx
+*.glb
+*.gltf
+*.tmp
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 构建产物中间文件
+*.o
+*.obj~
