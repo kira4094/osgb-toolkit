@@ -470,10 +470,10 @@ class App(ctk.CTk):
                     if getattr(args, 'uv', True):  # OBJ 默认展开 UV
                         import uv_unwrap
                         uv_obj = _os.path.join(work, "unwrapped.obj")
-                        ome_uv = uv_unwrap.unwrap(axis_obj, uv_obj, resolution=2048,
-                                                  padding=2, verbose=False)
+                        uv_unwrap.unwrap(axis_obj, uv_obj, resolution=2048,
+                                          padding=2, verbose=False)
                         export_obj = uv_obj
-                    # scale
+                    # scale: 顶点坐标×倍数
                     if args.scale != 1.0:
                         scaled = _os.path.join(work, "scaled.obj")
                         with open(export_obj) as fi, open(scaled, 'w') as fo:
@@ -484,6 +484,13 @@ class App(ctk.CTk):
                                     y = float(pp[2]) * args.scale
                                     z = float(pp[3]) * args.scale
                                     fo.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
+                                else:
+                                    fo.write(line)
+                        export_obj = scaled
+                    # 复制到最终输出路径
+                    import shutil as _shu
+                    _shu.copy2(export_obj, args.output)
+                    self.after(0, lambda: self._log(f"  输出: {args.output}"))
                 else:
                     step(4, "[5/5] 导出 FBX + 命名 + GlobalSettings...")
                     model_name = args.name.replace('+', '')
