@@ -103,10 +103,18 @@ class App(ctk.CTk):
         frame = self._section("✂️ 网格简化 (Garland-Heckbert / QEM)")
         frame.grid_columnconfigure(1, weight=1)
 
-        # 目标面数
+        # 目标面数: 两种输入方式(绝对值 / 百分比)
         ctk.CTkLabel(frame, text="目标面数:").grid(row=0, column=0, sticky="w", pady=3)
-        self.faces = ctk.CTkEntry(frame, width=120, placeholder_text="0 = 不简化")
-        self.faces.grid(row=0, column=1, sticky="w", padx=6)
+        face_mode_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        face_mode_frame.grid(row=0, column=1, sticky="w", padx=6)
+        self.face_mode = ctk.CTkOptionMenu(face_mode_frame, width=70, values=["绝对值", "百分比"],
+                                           command=self._on_face_mode)
+        self.face_mode.grid(row=0, column=0)
+        self.faces = ctk.CTkEntry(face_mode_frame, width=120, placeholder_text="10000")
+        self.faces.grid(row=0, column=1, padx=(6, 0))
+        self.face_hint = ctk.CTkLabel(face_mode_frame, text="", text_color="gray",
+                                      font=ctk.CTkFont(size=11))
+        self.face_hint.grid(row=0, column=2, padx=(6, 0))
 
         # 策略
         ctk.CTkLabel(frame, text="简化策略:").grid(row=1, column=0, sticky="w", pady=3)
@@ -216,6 +224,8 @@ class App(ctk.CTk):
         self.lod.set("L22")
         self.merge_ratio.insert(0, "0.022")
         self.faces.insert(0, "10000")
+        self.face_mode.set("绝对值")
+        self._on_face_mode("绝对值")
         self.strategy.set("planar(平面)")
         # 边界保持默认不勾选(对齐 OPEditor: 保边界会导致顶点过多)
         # self.preserve_boundary.select()  ← 不勾选
@@ -278,6 +288,16 @@ class App(ctk.CTk):
         self._set_status("处理中...", "#f0a020")
         threading.Thread(target=self._worker, args=(args,), daemon=True).start()
 
+    def _on_face_mode(self, mode):
+        """切换目标面数输入模式: 绝对值 / 百分比"""
+        if mode == "百分比":
+            self.faces.configure(placeholder_text="10 = 10%")
+            self.face_hint.configure(text="% (减为原面数的比例)")
+        else:
+            self.faces.configure(placeholder_text="10000")
+            self.face_hint.configure(text="")
+        self.face_hint.update_idletasks()
+
     def _collect_args(self):
         inp = self.input_path.get().strip()
         out = self.output_path.get().strip()
@@ -292,7 +312,17 @@ class App(ctk.CTk):
         a.lod = self.lod.get()
         a.merge_thr = float(self.merge_ratio.get()) if self.merge_ratio.get() else 0.022
         a.stitch_thr = 0.2
-        a.faces = int(self.faces.get() or 10000)
+        # 目标面数: 绝对值直接取; 百分比需加载后换算(见 _worker 第1步)
+        face_val = self.faces.get().strip()
+        if not face_val:
+            face_val = "10000"
+        a.face_mode = self.face_mode.get()
+        if a.face_mode == "百分比":
+            a.faces_pct = float(face_val) / 100.0
+            a.faces = 0  # 占位, _worker 里用 loaded_f 换算
+        else:
+            a.faces_pct = None
+            a.faces = int(float(face_val))
         strat = self.strategy.get().split("(")[0]
         a.strategy = strat
         # 瓦片名: 从输入目录提取, 去 + (与 Data/ 文件夹名语义一致)
@@ -345,8 +375,12 @@ class App(ctk.CTk):
                     raise RuntimeError("未找到 OSGB 瓦片")
                 max_lod = 0 if args.lod == 'root' else int(args.lod.replace('L',''))
                 loaded_v, loaded_f = ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, max_lod, env)
+                # 百分比模式: 加载后按比例换算目标面数
+                if getattr(args, 'faces_pct', None):
+                    args.faces = max(100, int(loaded_f * args.faces_pct))
                 self.after(0, lambda: self._log(
-                    f"  加载 {len(tiles)} 瓦片, {loaded_v:,} 顶点, {loaded_f:,} 面"))
+                    f"  加载 {len(tiles)} 瓦片, {loaded_v:,} 顶点, {loaded_f:,} 面"
+                    + (f", 目标面数={args.faces:,} ({getattr(args,'faces_pct',0)*100:.0f}%)" if getattr(args,'faces_pct',None) else "")))
 
                 # 第2步: 合并 + 缝合
                 step(1, "[2/5] 网格合并 + 边界缝合 ...")
