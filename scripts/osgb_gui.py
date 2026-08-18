@@ -179,8 +179,15 @@ class App(ctk.CTk):
         ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_output).grid(row=0, column=2)
 
         ctk.CTkLabel(frame, text="格式:").grid(row=1, column=0, sticky="w", pady=3)
-        self.format = ctk.CTkOptionMenu(frame, values=[".fbx", ".obj", ".gltf"])
+        self.format = ctk.CTkOptionMenu(frame, values=[".obj", ".fbx"], command=self._on_format)
         self.format.grid(row=1, column=1, sticky="w", padx=6)
+
+        ctk.CTkLabel(frame, text="缩放:").grid(row=2, column=0, sticky="w", pady=3)
+        self.scale = ctk.CTkEntry(frame, width=80, placeholder_text="1.0")
+        self.scale.grid(row=2, column=1, sticky="w", padx=6)
+        self.scale_hint = ctk.CTkLabel(frame, text="顶点×倍数(OBJ用; 100≈FBX scale)", text_color="gray",
+                                       font=ctk.CTkFont(size=11))
+        self.scale_hint.grid(row=2, column=2, sticky="w")
 
     # ========== 操作区 ==========
     def _build_action_bar(self):
@@ -237,7 +244,9 @@ class App(ctk.CTk):
         self.quality_thr.insert(0, "0.3")
         self.tex_size.insert(0, "2048")
         self.dilate.insert(0, "2")
-        self.format.set(".fbx")
+        self.format.set(".obj")
+        self.scale.insert(0, "100")
+        self._on_format(".obj")
         self._toggle_bake()
 
     def _toggle_bake(self):
@@ -288,6 +297,13 @@ class App(ctk.CTk):
         self._set_status("处理中...", "#f0a020")
         threading.Thread(target=self._worker, args=(args,), daemon=True).start()
 
+    def _on_format(self, fmt):
+        """切换输出格式: OBJ 提示 scale, FBX 提示命名"""
+        if fmt == ".obj":
+            self.scale_hint.configure(text="顶点×倍数(OBJ用; 100≈FBX scale)")
+        else:
+            self.scale_hint.configure(text="FBX 自动 scale=100(GlobalSettings)")
+
     def _on_face_mode(self, mode):
         """切换目标面数输入模式: 绝对值 / 百分比"""
         if mode == "百分比":
@@ -332,6 +348,8 @@ class App(ctk.CTk):
         # 输出 = 输出目录 + <瓦片名>.<格式>
         os.makedirs(out, exist_ok=True)
         a.output = os.path.join(out, tile_name + self.format.get())
+        a.scale = float(self.scale.get()) if self.scale.get() else 1.0
+        a.fmt = self.format.get()
         a.preserve_boundary = bool(self.preserve_boundary.get())
         a.preserve_normal = bool(self.preserve_normal.get())
         a.optimal_placement = bool(self.optimal_placement.get())
@@ -444,11 +462,33 @@ class App(ctk.CTk):
                     for tri in F:
                         f.write(f"f {tri[0]+1} {tri[1]+1} {tri[2]+1}\n")
 
-                # 第5步: 导出 FBX + 命名 + GlobalSettings
-                step(4, "[5/5] 导出 FBX ...")
-                model_name = args.name.replace('+', '')
-                ome.obj_to_fbx(osgconv, axis_obj, args.output, env, model_name=model_name)
-                ome.patch_fbx_global(args.output)
+                # 第5步: 导出 (OBJ 走 UV+scale 全流程, FBX 走 osgb_named)
+                if getattr(args, 'fmt', '.obj') == '.obj':
+                    step(4, "[5/5] 导出 OBJ (UV + scale)...")
+                    # UV 展开
+                    export_obj = axis_obj
+                    if getattr(args, 'uv', True):  # OBJ 默认展开 UV
+                        import uv_unwrap
+                        uv_obj = _os.path.join(work, "unwrapped.obj")
+                        ome_uv = uv_unwrap.unwrap(axis_obj, uv_obj, resolution=2048,
+                                                  padding=2, verbose=False)
+                        export_obj = uv_obj
+                    # scale
+                    if args.scale != 1.0:
+                        scaled = _os.path.join(work, "scaled.obj")
+                        with open(export_obj) as fi, open(scaled, 'w') as fo:
+                            for line in fi:
+                                pp = line.split()
+                                if pp and pp[0] == 'v':
+                                    x = float(pp[1]) * args.scale
+                                    y = float(pp[2]) * args.scale
+                                    z = float(pp[3]) * args.scale
+                                    fo.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
+                else:
+                    step(4, "[5/5] 导出 FBX + 命名 + GlobalSettings...")
+                    model_name = args.name.replace('+', '')
+                    ome.obj_to_fbx(osgconv, axis_obj, args.output, env, model_name=model_name)
+                    ome.patch_fbx_global(args.output)
 
                 size = _os.path.getsize(args.output) // 1024
                 self.after(0, lambda: (

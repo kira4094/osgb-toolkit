@@ -299,6 +299,8 @@ def main():
                     choices=['planar', 'prob_planar', 'triangular', 'prob_triangular'],
                     help='减面策略(默认 planar)')
     ap.add_argument('--verbose', action='store_true')
+    ap.add_argument('--uv', action='store_true', help='自动分UV + 纹理烘焙(需先转轴)')
+    ap.add_argument('--uv-resolution', type=int, default=2048, help='UV纹理分辨率(默认2048)')
     args = ap.parse_args()
 
     osgconv = find_osg()
@@ -406,9 +408,22 @@ def main():
         if args.verbose:
             print(f"  转轴: {len(V)} 顶点")
 
-        # 第5步: 导出 FBX (osgconv) + 重命名 + GlobalSettings
-        print("[5/5] 导出 FBX + 重命名 + GlobalSettings")
-        obj_to_fbx(osgconv, axis_obj, args.output, env, model_name=args.name)
+        # 第5步: 自动分 UV (可选) + 导出 FBX
+        if args.uv:
+            print("[5/6] 自动分 UV (xatlas)...")
+            import uv_unwrap
+            uv_obj = os.path.join(work, 'unwrapped.obj')
+            nv, nf, nchart = uv_unwrap.unwrap(axis_obj, uv_obj,
+                                              resolution=args.uv_resolution,
+                                              padding=4, verbose=args.verbose)
+            if args.verbose:
+                print(f"  UV: {nv} 顶点, {nf} 面, {nchart} 岛")
+            export_obj = uv_obj
+            print("[6/6] 导出 FBX + 重命名 + GlobalSettings")
+        else:
+            export_obj = axis_obj
+            print("[5/5] 导出 FBX + 重命名 + GlobalSettings")
+        obj_to_fbx(osgconv, export_obj, args.output, env, model_name=args.name)
         patch_fbx_global(args.output)
 
         size = os.path.getsize(args.output) // 1024
