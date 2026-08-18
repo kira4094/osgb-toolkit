@@ -1,5 +1,6 @@
 # 第三方依赖(1.9GB OSG 预编译, 不入库)
-thirdparty/
+thirdparty/*
+!thirdparty/OpenSceneGraph_HERE
 
 # 测试输出/临时文件
 tests/
