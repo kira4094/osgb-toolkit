@@ -172,15 +172,15 @@ class App(ctk.CTk):
         self.bake_panel.grid(row=1, column=0, columnspan=3, sticky="ew")
 
         ctk.CTkLabel(self.bake_panel, text="纹理大小:").grid(row=0, column=0, sticky="w", pady=3)
-        self.tex_size = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="2048")
+        self.tex_size = ctk.CTkEntry(self.bake_panel, width=120)
         self.tex_size.grid(row=0, column=1, sticky="w", padx=6)
 
         ctk.CTkLabel(self.bake_panel, text="纹理精度(texels/unit):").grid(row=1, column=0, sticky="w", pady=3)
-        self.texels_per_unit = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="留空=用纹理大小")
+        self.texels_per_unit = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="")
         self.texels_per_unit.grid(row=1, column=1, sticky="w", padx=6)
 
         ctk.CTkLabel(self.bake_panel, text="边界扩展(dilate):").grid(row=2, column=0, sticky="w", pady=3)
-        self.dilate = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="2")
+        self.dilate = ctk.CTkEntry(self.bake_panel, width=120)
         self.dilate.grid(row=2, column=1, sticky="w", padx=6)
 
     # ========== 输出区 ==========
@@ -203,6 +203,16 @@ class App(ctk.CTk):
         self.scale_hint = ctk.CTkLabel(frame, text="顶点×倍数(OBJ用; 100≈FBX scale)", text_color="gray",
                                        font=ctk.CTkFont(size=11))
         self.scale_hint.grid(row=2, column=2, sticky="w")
+
+        # 纹理烘焙(可选, 不破坏原有流程)
+        bake_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        bake_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.bake = ctk.CTkCheckBox(bake_frame, text="纹理烘焙(GPU, 从OSGB采样到UV图集)", width=260)
+        self.bake.grid(row=0, column=0)
+        ctk.CTkLabel(bake_frame, text="分辨率:").grid(row=0, column=1, padx=(8, 2))
+        self.bake_res = ctk.CTkEntry(bake_frame, width=70, placeholder_text="2048")
+        self.bake_res.insert(0, "2048")
+        self.bake_res.grid(row=0, column=2)
 
     # ========== 操作区 ==========
     def _build_action_bar(self):
@@ -263,6 +273,7 @@ class App(ctk.CTk):
         self.quality_thr.insert(0, "0.3")
         self.tex_size.insert(0, "2048")
         self.dilate.insert(0, "2")
+        self.texels_per_unit.insert(0, "")
         self.format.set(".obj")
         self.scale.insert(0, "100")
         self._on_format(".obj")
@@ -378,6 +389,14 @@ class App(ctk.CTk):
         a.output = os.path.join(out, tile_name + self.format.get())
         a.scale = float(self.scale.get()) if self.scale.get() else 1.0
         a.fmt = self.format.get()
+        a.bake = bool(self.bake.get())
+        self._toggle_bake()  # 确保烘焙面板 state 正确(勾选时 normal)
+        _ts = self.tex_size.get().strip()
+        _dl = self.dilate.get().strip()
+        _tpu = self.texels_per_unit.get().strip()
+        a.bake_res = int(_ts) if _ts else 2048
+        a.dilate = int(_dl) if _dl else 2
+        a.texels_per_unit = float(_tpu) if _tpu else None
         a.uv_mode = self.uv_mode.get()
         a.uv_resolution = int(self.uv_res.get()) if self.uv_res.get() else 2048
         uvval = self.uv_value.get().strip().lower()
@@ -395,9 +414,7 @@ class App(ctk.CTk):
         a.remesh = bool(self.remesh.get())
         a.remesh_iterations = 10
         a.remesh_targetlen = None
-        a.tex_size = int(self.tex_size.get() or 2048)
-        a.texels_per_unit = float(self.texels_per_unit.get()) if self.texels_per_unit.get() else None
-        a.dilate = int(self.dilate.get() or 2)
+        a.tex_size = getattr(a, 'bake_res', int(self.tex_size.get() or 2048))
         a.rotation = ""  # 坐标变换在 OBJ 层完成, FBX 导出不再旋转
         a.coords = 'geographic'
         a.keep_obj = False
@@ -479,56 +496,89 @@ class App(ctk.CTk):
                 else:
                     simp_obj = merged_obj
 
-                # 第4步: 调整轴向 (Z-up → Y-up)
-                step(3, "[4/5] 调整轴向 ...")
+                # 第4步: UV 展开 (在 Z-up 坐标, 与 A 源同坐标系)
+                step(3, "[4/5] UV 展开...")
                 import numpy as np
-                V = []; F = []
-                for line in open(simp_obj, encoding='utf-8', errors='replace'):
-                    if line.startswith('v '):
-                        p = line.split(); V.append([float(p[1]), float(p[2]), float(p[3])])
-                    elif line.startswith('f '):
-                        p = line.split()[1:]
-                        F.append([int(x.split('/')[0])-1 for x in p[:3]])
-                V = np.array(V); F = np.array(F)
-                V_rot = np.column_stack([V[:,0], V[:,2], -V[:,1]])
-                axis_obj = _os.path.join(work, "axis.obj")
-                with open(axis_obj, 'w') as f:
-                    for v in V_rot:
-                        f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-                    for tri in F:
-                        f.write(f"f {tri[0]+1} {tri[1]+1} {tri[2]+1}\n")
+                uv_obj = _os.path.join(work, "unwrapped.obj")
+                if getattr(args, 'uv', True):  # OBJ 默认展开 UV
+                    import uv_unwrap
+                    uv_unwrap.unwrap(simp_obj, uv_obj,
+                                      resolution=getattr(args, 'uv_resolution', 2048),
+                                      padding=getattr(args, 'uv_padding', 4),
+                                      brute_force=getattr(args, 'uv_brute', False),
+                                      verbose=False)
+                    export_obj = uv_obj
+                else:
+                    export_obj = simp_obj
 
-                # 第5步: 导出 (OBJ 走 UV+scale 全流程, FBX 走 osgb_named)
+                # 纹理烘焙(可选): UV展开后, B(export_obj) 与 A(merged) 都是 Z-up, 坐标重叠
+                if getattr(args, 'bake', False):
+                    step(4, "[4.5/5] 纹理烘焙 (GPU)...")
+                    import texture_bake as _tb
+                    _cwd = _os.getcwd()
+                    _os.chdir(_os.path.dirname(raw_obj))
+                    _src = _tb.BakeSource(_os.path.basename(raw_obj))  # A 源 = osgb_full 输出(带纹理), Z-up
+                    _os.chdir(_cwd)
+                    tex_png = _os.path.join(work, "texture.png")
+                    _tb.bake(_src, export_obj, tex_png,
+                             resolution=getattr(args, 'bake_res', 2048),
+                             verbose=True,
+                             dilate=getattr(args, 'dilate', 4),
+                             sample_step=2)
+                    args._tex_png = tex_png
+                    self.after(0, lambda: self._log(f"  烘焙完成: {tex_png}"))
+
+                # 第5步: 转轴 Y-up + scale + 导出
                 if getattr(args, 'fmt', '.obj') == '.obj':
-                    step(4, "[5/5] 导出 OBJ (UV + scale)...")
-                    # UV 展开
-                    export_obj = axis_obj
-                    if getattr(args, 'uv', True):  # OBJ 默认展开 UV
-                        import uv_unwrap
-                        uv_obj = _os.path.join(work, "unwrapped.obj")
-                        uv_unwrap.unwrap(axis_obj, uv_obj,
-                                          resolution=getattr(args, 'uv_resolution', 2048),
-                                          padding=getattr(args, 'uv_padding', 4),
-                                          brute_force=getattr(args, 'uv_brute', False),
-                                          verbose=False)
-                        export_obj = uv_obj
-                    # scale: 顶点坐标×倍数
+                    step(5, "[5/5] 转轴 Y-up + scale + 导出...")
+                    # 读 UV 展开后的几何(vi/vti 分离) + 转轴 + scale
+                    _v, _vt, _f = [], [], []
+                    for _line in open(export_obj, encoding='utf-8', errors='replace'):
+                        _p = _line.split()
+                        if not _p: continue
+                        if _p[0] == 'v':
+                            _v.append([float(_p[1]), float(_p[2]), float(_p[3])])
+                        elif _p[0] == 'vt':
+                            _vt.append([float(_p[1]), float(_p[2])])
+                        elif _p[0] == 'f':
+                            _idx = [x.split('/') for x in _p[1:]]
+                            if len(_idx) >= 3:
+                                _f.append((int(_idx[0][0])-1, int(_idx[0][1])-1,
+                                           int(_idx[1][0])-1, int(_idx[1][1])-1,
+                                           int(_idx[2][0])-1, int(_idx[2][1])-1))
+                    _V = np.array(_v)
+                    # 转轴 (x,y,z)Z-up → (x,z,-y)Y-up
+                    _V_rot = np.column_stack([_V[:,0], _V[:,2], -_V[:,1]])
+                    # scale
                     if args.scale != 1.0:
-                        scaled = _os.path.join(work, "scaled.obj")
-                        with open(export_obj) as fi, open(scaled, 'w') as fo:
-                            for line in fi:
-                                pp = line.split()
-                                if pp and pp[0] == 'v':
-                                    x = float(pp[1]) * args.scale
-                                    y = float(pp[2]) * args.scale
-                                    z = float(pp[3]) * args.scale
-                                    fo.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
-                                else:
-                                    fo.write(line)
-                        export_obj = scaled
-                    # 复制到最终输出路径
-                    import shutil as _shu
-                    _shu.copy2(export_obj, args.output)
+                        _V_rot *= args.scale
+                    # 写最终 OBJ(几何 + vt V翻转对齐图集 + f 分离)
+                    with open(args.output, 'w', encoding='utf-8') as _fout:
+                        for _xyz in _V_rot:
+                            _fout.write(f"v {_xyz[0]:.6f} {_xyz[1]:.6f} {_xyz[2]:.6f}\n")
+                        for _uvt in _vt:
+                            _fout.write(f"vt {_uvt[0]:.6f} {_uvt[1]:.6f}\n")  # 烘焙已用 1-v 对齐, vt 保持原样
+                        for _row in _f:
+                            _fout.write(f"f {_row[0]+1}/{_row[1]+1} {_row[2]+1}/{_row[3]+1} {_row[4]+1}/{_row[5]+1}\n")
+                    # 有烘焙: 写 MTL + 复制 texture
+                    if getattr(args, '_tex_png', None):
+                        import shutil as _shu
+                        _base = _os.path.splitext(args.output)[0]
+                        _mtl = _base + '.mtl'
+                        _tex = _base + '_texture.png'
+                        # 导出贴图上下翻转(垂直翻转, OBJ vt 保持原样)
+                        from PIL import Image as _PILImage
+                        _timg = _PILImage.open(args._tex_png).transpose(_PILImage.FLIP_TOP_BOTTOM)
+                        _timg.save(_tex)
+                        with open(_mtl, 'w') as _f:
+                            _f.write("newmtl material_0\n")
+                            _f.write("Ka 0.2 0.2 0.2\nKd 0.8 0.8 0.8\nKs 0 0 0\n")
+                            _f.write("map_Kd " + _os.path.basename(_tex) + "\n")
+                        # OBJ 头部加 mtllib
+                        _obj_data = open(args.output, encoding='utf-8').read()
+                        _obj_data = f"mtllib {_os.path.basename(_mtl)}\n" + _obj_data
+                        open(args.output, 'w', encoding='utf-8').write(_obj_data)
+                        self.after(0, lambda: self._log(f"  纹理: {_tex}"))
                     self.after(0, lambda: self._log(f"  输出: {args.output}"))
                 else:
                     step(4, "[5/5] 导出 FBX + 命名 + GlobalSettings...")

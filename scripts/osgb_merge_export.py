@@ -109,6 +109,12 @@ def osgb_full_load(osgb_full, osgconv, tiles, out_obj, max_lod, env):
         if len(objs) == 1:
             # 单瓦片: 直接用 osgb_full 输出, 不做 osgconv 合并(避免 OBJ 翻转!)
             shutil.copy2(objs[0], out_obj)
+            # 复制 MTL + 纹理文件(烘焙需要!)
+            src_dir = os.path.dirname(objs[0])
+            dst_dir = os.path.dirname(out_obj)
+            for fname in os.listdir(src_dir):
+                if fname.endswith(('.mtl', '.jpg', '.png', '.jpeg')) or fname.startswith('texture_'):
+                    shutil.copy2(os.path.join(src_dir, fname), os.path.join(dst_dir, fname))
             print(f"  [osgb_full] 单瓦片(LOD分层回退到{max_lod}) → OBJ"
                   f" (加载 {total_verts:,} 顶点, {total_faces:,} 面)")
         else:

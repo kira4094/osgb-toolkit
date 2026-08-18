@@ -16,10 +16,16 @@
 #include <osgDB/ReadFile>
 #include <osgDB/WriteFile>
 #include <osgDB/FileUtils>
+#include <osgDB/FileNameUtils>
+#include <osgDB/Registry>
+#include <osg/StateSet>
+#include <osg/Texture2D>
+#include <osg/Image>
 #include <osgUtil/Optimizer>
 #include <iostream>
 #include <string>
 #include <set>
+#include <map>
 #include <cstdlib>
 
 static int lod_level(const std::string& fn)
@@ -127,10 +133,55 @@ int main(int argc, char* argv[])
     count_geoms(merged.get(), verts, faces);
     std::cout << "Total: " << verts << " vertices, " << faces << " faces" << std::endl;
 
+    // 给所有 Image 设文件名, 让 OBJ 写入器生成 usemtl/MTL 纹理引用
+    struct TexCollect : public osg::NodeVisitor {
+        std::map<osg::Image*, std::string> names;
+        int counter = 0;
+        TexCollect() : osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN) {}
+        void apply(osg::Node& node) override {
+            collect(node.getStateSet());
+            traverse(node);
+        }
+        void apply(osg::Geode& geode) override {
+            collect(geode.getStateSet());
+            for (unsigned i = 0; i < geode.getNumDrawables(); ++i)
+                collect(geode.getDrawable(i)->getStateSet());
+            traverse(geode);
+        }
+        void collect(osg::StateSet* ss) {
+            if (!ss) return;
+            for (unsigned i = 0; i < ss->getTextureAttributeList().size(); ++i) {
+                osg::Texture2D* t2d = dynamic_cast<osg::Texture2D*>(ss->getTextureAttribute(i, osg::StateAttribute::TEXTURE));
+                if (!t2d) continue;
+                osg::Image* img = t2d->getImage();
+                if (img && names.find(img) == names.end()) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "texture_%03d.jpg", counter++);
+                    img->setFileName(buf);
+                    names[img] = buf;
+                }
+            }
+        }
+    };
+    TexCollect texCollect;
+    merged->accept(texCollect);
+    std::cout << "Textures: " << texCollect.names.size() << std::endl;
+
     if (!osgDB::writeNodeFile(*merged, output)) {
         std::cerr << "Failed to write: " << output << std::endl;
         return 3;
     }
     std::cout << "Written: " << output << std::endl;
+
+    // 写纹理文件到输出目录(OBJ 同目录)
+    std::string outDir = osgDB::getFilePath(output);
+    if (outDir.empty()) outDir = ".";
+    for (auto& kv : texCollect.names) {
+        std::string path = outDir + "\\" + kv.second;
+        if (osgDB::writeImageFile(*kv.first, path))
+            std::cout << "  tex " << kv.second << " (" << kv.first->s() << "x" << kv.first->t() << ")" << std::endl;
+        else
+            std::cerr << "  FAILED " << kv.second << std::endl;
+    }
     return 0;
 }

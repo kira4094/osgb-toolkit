@@ -17,3 +17,6 @@ __pycache__/
 # 构建产物中间文件
 *.o
 *.obj~
+output/
+*.png
+*.mtl

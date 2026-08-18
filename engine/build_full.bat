@@ -1,5 +1,4 @@
 @echo off
-REM build_tex.bat — 编译 osgb_texture_dump.exe (对齐 build.bat)
 setlocal
 set "VS=C:\Program Files\Microsoft Visual Studio\2022\Community"
 set "MSVC=%VS%\VC\Tools\MSVC\14.38.33130"
@@ -16,8 +15,8 @@ set "LIB=%MSVC%\lib\x64;%SDK%\Lib\%SDKVER%\ucrt\x64;%SDK%\Lib\%SDKVER%\um\x64;%O
 
 "%CL_EXE%" /nologo /EHsc /O2 /std:c++20 /D NOMINMAX /D WIN32_LEAN_AND_MEAN /D NDEBUG /utf-8 ^
   /I "%OSGINC%" /I "%ENGINEDIR%" ^
-  "%ENGINEDIR%\osgb_texture_dump.cpp" ^
+  "%ENGINEDIR%\osgb_full.cpp" ^
   /link /LIBPATH:"%OSGLIB%" osg.lib osgDB.lib osgUtil.lib OpenThreads.lib ^
-  /OUT:"%ENGINEDIR%\osgb_texture_dump.exe"
+  /OUT:"%ENGINEDIR%\osgb_full.exe"
 echo EXITCODE=%ERRORLEVEL%
 endlocal
