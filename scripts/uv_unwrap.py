@@ -26,7 +26,7 @@ def load_obj(path):
 
 
 def unwrap(in_obj, out_obj, resolution=2048, padding=4, max_iterations=4,
-           texels_per_unit=None, verbose=False):
+           texels_per_unit=None, verbose=False, brute_force=False):
     """自动分 UV + 打包
     v = 几何顶点(保持融合), vt = UV 顶点(seam 分裂, 正常)
     f = vi/vti 分离引用: 几何融合 + UV 分裂并存
@@ -47,9 +47,8 @@ def unwrap(in_obj, out_obj, resolution=2048, padding=4, max_iterations=4,
     pack_opts = xatlas.PackOptions()
     pack_opts.resolution = resolution
     pack_opts.padding = padding
-    # 性能: bruteForce 打包慢 50-80 倍(57s vs 0.7s), 用 padding=4 达相近利用率(84%)
-    # 如需极致打包质量, 可传 brute_force=True
-    pack_opts.bruteForce = getattr(sys.modules.get('__main__'), '_UV_BRUTE', False)
+    # bruteForce 打包: 质量最高(89%)但慢 50-80 倍; padding 启发式快 80 倍(84.5%)
+    pack_opts.bruteForce = brute_force
     if texels_per_unit:
         pack_opts.texels_per_unit = texels_per_unit
 
@@ -85,11 +84,13 @@ if __name__ == '__main__':
     ap.add_argument('out_obj')
     ap.add_argument('--resolution', type=int, default=2048, help='纹理分辨率')
     ap.add_argument('--padding', type=int, default=4, help='岛间距像素')
+    ap.add_argument('--brute-force', action='store_true', help='bruteForce 密集打包(慢但利用率最高)')
     ap.add_argument('--texels-per-unit', type=float, default=None, help='每单位texel')
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
 
     nv, nuv, nchart = unwrap(args.in_obj, args.out_obj,
                              resolution=args.resolution, padding=args.padding,
-                             texels_per_unit=args.texels_per_unit, verbose=args.verbose)
+                             texels_per_unit=args.texels_per_unit, verbose=args.verbose,
+                             brute_force=args.brute_force)
     print(f"完成! 几何 {nv} 顶点, UV {nuv} 顶点, {nchart} 岛 -> {args.out_obj}")

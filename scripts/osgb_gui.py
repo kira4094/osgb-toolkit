@@ -144,6 +144,21 @@ class App(ctk.CTk):
         self.remesh = ctk.CTkCheckBox(frame, text="布线优化(各向同性重网格化, 模拟OPEditor)")
         self.remesh.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+        # UV 打包设置
+        ctk.CTkLabel(frame, text="UV打包:").grid(row=5, column=0, sticky="w", pady=3)
+        uvpack = ctk.CTkFrame(frame, fg_color="transparent")
+        uvpack.grid(row=5, column=1, sticky="w", padx=6)
+        self.uv_mode = ctk.CTkOptionMenu(uvpack, width=90, values=["padding", "bruteForce"],
+                                         command=self._on_uv_mode)
+        self.uv_mode.grid(row=0, column=0)
+        self.uv_value = ctk.CTkEntry(uvpack, width=70, placeholder_text="auto")
+        self.uv_value.grid(row=0, column=1, padx=(6, 0))
+        self.uv_hint = ctk.CTkLabel(uvpack, text="px或auto(=分辨率/256)", text_color="gray",
+                                    font=ctk.CTkFont(size=11))
+        self.uv_hint.grid(row=0, column=2, padx=(6, 0))
+        self.uv_res = ctk.CTkEntry(frame, width=70, placeholder_text="2048")
+        self.uv_res.grid(row=5, column=2, sticky="w")
+
     # ========== 纹理烘焙区 ==========
     def _build_bake_section(self):
         frame = self._section("🎨 纹理烘焙")
@@ -234,6 +249,10 @@ class App(ctk.CTk):
         self.face_mode.set("绝对值")
         self._on_face_mode("绝对值")
         self.strategy.set("planar(平面)")
+        self.uv_mode.set("padding")
+        self.uv_value.delete(0, "end"); self.uv_value.insert(0, "auto")
+        self.uv_res.delete(0, "end"); self.uv_res.insert(0, "2048")
+        self._on_uv_mode("padding")
         # 边界保持默认不勾选(对齐 OPEditor: 保边界会导致顶点过多)
         # self.preserve_boundary.select()  ← 不勾选
         self.preserve_normal.select()
@@ -304,6 +323,15 @@ class App(ctk.CTk):
         else:
             self.scale_hint.configure(text="FBX 自动 scale=100(GlobalSettings)")
 
+    def _on_uv_mode(self, mode):
+        """切换 UV 打包模式: padding 提示岛间距, bruteForce 提示无参"""
+        if mode == "bruteForce":
+            self.uv_hint.configure(text="密集打包(慢,质量最高)")
+            self.uv_value.configure(state="disabled")
+        else:
+            self.uv_hint.configure(text="px或auto(=分辨率/256)")
+            self.uv_value.configure(state="normal")
+
     def _on_face_mode(self, mode):
         """切换目标面数输入模式: 绝对值 / 百分比"""
         if mode == "百分比":
@@ -350,6 +378,14 @@ class App(ctk.CTk):
         a.output = os.path.join(out, tile_name + self.format.get())
         a.scale = float(self.scale.get()) if self.scale.get() else 1.0
         a.fmt = self.format.get()
+        a.uv_mode = self.uv_mode.get()
+        a.uv_resolution = int(self.uv_res.get()) if self.uv_res.get() else 2048
+        uvval = self.uv_value.get().strip().lower()
+        if uvval in ('', 'auto'):
+            a.uv_padding = max(1, a.uv_resolution // 256)  # 512→2, 1024→4, 2048→8, 4096→16
+        else:
+            a.uv_padding = int(uvval)
+        a.uv_brute = (a.uv_mode == "bruteForce")
         a.preserve_boundary = bool(self.preserve_boundary.get())
         a.preserve_normal = bool(self.preserve_normal.get())
         a.optimal_placement = bool(self.optimal_placement.get())
@@ -470,8 +506,11 @@ class App(ctk.CTk):
                     if getattr(args, 'uv', True):  # OBJ 默认展开 UV
                         import uv_unwrap
                         uv_obj = _os.path.join(work, "unwrapped.obj")
-                        uv_unwrap.unwrap(axis_obj, uv_obj, resolution=2048,
-                                          padding=2, verbose=False)
+                        uv_unwrap.unwrap(axis_obj, uv_obj,
+                                          resolution=getattr(args, 'uv_resolution', 2048),
+                                          padding=getattr(args, 'uv_padding', 4),
+                                          brute_force=getattr(args, 'uv_brute', False),
+                                          verbose=False)
                         export_obj = uv_obj
                     # scale: 顶点坐标×倍数
                     if args.scale != 1.0:
