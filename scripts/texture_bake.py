@@ -229,6 +229,11 @@ def load_simplified_obj(obj_path):
         elif p[0] == 'f':
             idx = [x.split('/') for x in p[1:]]
             if len(idx) >= 3:
+                # 容错: f v//vn (无UV) 或 f v 的面跳过(烘焙需要UV)
+                if len(idx[0]) < 2 or len(idx[1]) < 2 or len(idx[2]) < 2:
+                    continue
+                if idx[0][1] == '' or idx[1][1] == '' or idx[2][1] == '':
+                    continue
                 f.append((int(idx[0][0])-1, int(idx[0][1])-1,
                           int(idx[1][0])-1, int(idx[1][1])-1,
                           int(idx[2][0])-1, int(idx[2][1])-1))
