@@ -72,6 +72,21 @@ class AppA(ctk.CTk):
         self.input_path.grid(row=0, column=1, sticky="ew", padx=6)
         ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_input).grid(row=0, column=2)
 
+        ctk.CTkLabel(frame, text="批量方式:").grid(row=1, column=0, sticky="w", pady=3)
+        self.batch_mode = ctk.CTkOptionMenu(frame,
+            values=["每瓦片独立OBJ", "全部合并成1个OBJ"],
+            command=self._on_batch_mode)
+        self.batch_mode.grid(row=1, column=1, sticky="w", padx=6)
+        self.batch_hint = ctk.CTkLabel(frame, text="每瓦片: 输入含Data/的工程目录, 逐瓦片输出",
+                                       text_color="gray", font=ctk.CTkFont(size=11))
+        self.batch_hint.grid(row=1, column=2, sticky="w")
+
+    def _on_batch_mode(self, mode):
+        if mode == "每瓦片独立OBJ":
+            self.batch_hint.configure(text="每瓦片: 输入含Data/的工程目录, 逐瓦片输出")
+        else:
+            self.batch_hint.configure(text="全部合并: 所有瓦片合并成1个OBJ")
+
     def _build_lod_section(self):
         frame = self._section("A2. LOD 与合并")
         frame.grid_columnconfigure(1, weight=1)
@@ -223,6 +238,7 @@ class AppA(ctk.CTk):
     # ========== 默认值 / 工具 ==========
     def set_defaults(self):
         self.lod.set("L22")
+        self.batch_mode.set("每瓦片独立OBJ")
         self.merge_ratio.insert(0, "0.022")
         self.stitch_ratio.insert(0, "0.2")
         self.faces.insert(0, "10000")
@@ -322,6 +338,7 @@ class AppA(ctk.CTk):
         a.optimal_placement = bool(self.optimal_placement.get())
         a.quality_thr = float(self.quality_thr.get()) if self.quality_thr.get() else None
         a.scale = float(self.scale.get()) if self.scale.get() else 1.0
+        a.batch_mode = self.batch_mode.get()
         base = os.path.basename(inp.rstrip('\\/'))
         a.name = base.replace('+', '')
         os.makedirs(out, exist_ok=True)
@@ -344,104 +361,129 @@ class AppA(ctk.CTk):
             import osgb_merge_export as ome
             import pymeshlab
             from pymeshlab.pmeshlab import PureValue
-            work = os.path.join(os.environ.get('TEMP', '/tmp'), "osgb_gui_a_work")
-            os.makedirs(work, exist_ok=True)
-            self.progress.set(0.05)
-            try:
-                osgconv = ome.find_osg()
-                osgb_full = os.path.join(SCRIPT_DIR, '..', 'engine', 'osgb_full.exe')
-                env = ome.osgb_env(osgconv)
-                tiles = ome.find_root_tiles(args.input)
-                if not tiles:
-                    raise ValueError(f"未找到 OSGB 文件: {args.input}")
-                max_lod = 0 if args.lod == "all" else (None if args.lod == "root" else int(args.lod[1:]))
-                raw_obj = os.path.join(work, "raw.obj")
-                self.after(0, lambda: self._log(f"[A1] 加载 OSGB (LOD={args.lod}, {len(tiles)} 瓦片)..."))
-                loaded_v, loaded_f = ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, max_lod, env)
-                if args.faces_pct:
-                    args.faces = max(100, int(loaded_f * args.faces_pct))
-                self.after(0, lambda: self._log(
-                    f"  加载: {loaded_v:,} 顶点, {loaded_f:,} 面"
-                    + (f", 目标面数={args.faces:,}" if args.faces_pct else "")))
-                self.progress.set(0.35)
-                self.after(0, lambda: self._log("[A2] 合并 + 边界缝合 ..."))
-                merged_obj = os.path.join(work, "merged.obj")
-                ome.merge_mesh(raw_obj, merged_obj, args.merge_thr, args.stitch_thr, True)
-                self.progress.set(0.55)
-                self.after(0, lambda: self._log(
-                    f"[A3] 简化 (策略={args.strategy}, 目标={args.faces}) ..."))
-                simp_obj = os.path.join(work, "simplified.obj")
-                ms = pymeshlab.MeshSet()
-                ms.load_new_mesh(merged_obj)
-                before_f = ms.current_mesh().face_number()
-                if args.faces > 0 and args.faces < before_f:
-                    strat = {
-                        'planar': dict(planarquadric=True, qualitythr=0.3),
-                        'prob_planar': dict(planarquadric=True, qualitythr=0.1),
-                        'triangular': dict(planarquadric=False, qualitythr=0.3),
-                        'prob_triangular': dict(planarquadric=False, qualitythr=0.5),
-                    }.get(args.strategy, dict(planarquadric=True, qualitythr=0.3))
-                    decim_params = dict(
-                        targetfacenum=args.faces,
-                        preserveboundary=bool(args.preserve_boundary),
-                        preservenormal=bool(args.preserve_normal),
-                        optimalplacement=bool(args.optimal_placement),
-                    )
-                    decim_params.update(strat)
-                    if getattr(args, 'quality_thr', None) is not None:
-                        decim_params['qualitythr'] = float(args.quality_thr)
-                    ms.meshing_decimation_quadric_edge_collapse(**decim_params)
-                    m = ms.current_mesh()
-                    V = m.vertex_matrix(); F = m.face_matrix()
-                    with open(simp_obj, 'w') as f:
-                        for v in V:
-                            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-                        for tri in F:
-                            f.write(f"f {tri[0]+1} {tri[1]+1} {tri[2]+1}\n")
-                    self.after(0, lambda: self._log(
-                        f"  简化: {before_f} → {len(F)} 面, {len(V)} 顶点"))
-                else:
-                    simp_obj = merged_obj
-                self.progress.set(0.8)
-                self.after(0, lambda: self._log("[A4] 转轴 Y-up + scale + 输出 OBJ..."))
-                _v, _f = [], []
-                for _line in open(simp_obj, encoding='utf-8', errors='replace'):
-                    _p = _line.split()
-                    if not _p: continue
-                    if _p[0] == 'v':
-                        _v.append([float(_p[1]), float(_p[2]), float(_p[3])])
-                    elif _p[0] == 'f':
-                        _idx = [int(x.split('/')[0])-1 for x in _p[1:]]
-                        if len(_idx) >= 3:
-                            _f.append(tuple(_idx[:3]))
-                _V = np.array(_v)
-                _V_rot = np.column_stack([_V[:,0], _V[:,2], -_V[:,1]])
-                if args.scale != 1.0:
-                    _V_rot *= args.scale
-                with open(args.output, 'w', encoding='utf-8') as _fout:
-                    _fout.write("# OSGB merge+simplify, Y-up, scale=%g (A段输出, 供手动修改)\n" % args.scale)
-                    for _xyz in _V_rot:
-                        _fout.write(f"v {_xyz[0]:.6f} {_xyz[1]:.6f} {_xyz[2]:.6f}\n")
-                    for _row in _f:
-                        _fout.write(f"f {_row[0]+1} {_row[1]+1} {_row[2]+1}\n")
+            osgconv = ome.find_osg()
+            osgb_full = os.path.join(SCRIPT_DIR, '..', 'engine', 'osgb_full.exe')
+            env = ome.osgb_env(osgconv)
+            max_lod = 0 if args.lod == "all" else (None if args.lod == "root" else int(args.lod[1:]))
+            tiles = ome.find_root_tiles(args.input)
+            if not tiles:
+                raise ValueError(f"未找到 OSGB 文件: {args.input}")
+
+            batch = getattr(args, 'batch_mode', '全部合并成1个OBJ') == "每瓦片独立OBJ"
+            if not batch:
+                # 全部合并成 1 个 OBJ
+                self._log(f"[A] 全部合并模式: {len(tiles)} 瓦片 → 1个OBJ")
+                self._process_tile(tiles, args.output, args, ome, pymeshlab, PureValue,
+                                   osgconv, osgb_full, env, max_lod, log=self._log)
                 size = os.path.getsize(args.output) // 1024
-                self.after(0, lambda: self._log(f"  A段输出: {args.output} ({size} KB)"))
-                self.after(0, lambda: (
-                    self._log(f"A段完成! {len(_V_rot):,} 顶点 / {len(_f):,} 面 — 请手动修改后交给B段"),
+                self.after(0, lambda args=args, size=size: (
+                    self._log(f"A段完成! 输出: {args.output} ({size} KB) — 请手动修改后交给B段"),
                     self.progress.set(1),
                     self._set_status("A完成 ✓", "#22c55e"),
                     self.run_btn.configure(text="▶ A段: 合并简化 → OBJ", state="normal"),
                 ))
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
+            else:
+                # 每瓦片独立 OBJ
+                self.after(0, lambda: self._log(f"[A] 每瓦片独立模式: {len(tiles)} 瓦片"))
+                ok = 0
+                for i, tile in enumerate(tiles):
+                    tname = os.path.basename(os.path.dirname(tile)).replace('+', '')
+                    t_out = os.path.join(os.path.dirname(args.output), tname + ".obj")
+                    self.after(0, lambda t=tname, i=i: self._log(f"  [{i+1}/{len(tiles)}] {t}"))
+                    try:
+                        self._process_tile([tile], t_out, args, ome, pymeshlab, PureValue,
+                                           osgconv, osgb_full, env, max_lod, log=self._log)
+                        ok += 1
+                    except Exception as e:
+                        self.after(0, lambda t=tname, e=e: self._log(f"  ❌ {t} 失败: {e}"))
+                    self.progress.set(0.1 + 0.9 * (i + 1) / len(tiles))
+                self.after(0, lambda ok=ok, tiles=tiles: (
+                    self._log(f"A段批量完成! {ok}/{len(tiles)} 成功 — 请逐个手动修改后交给B段"),
+                    self.progress.set(1),
+                    self._set_status("A完成 ✓", "#22c55e"),
+                    self.run_btn.configure(text="▶ A段: 合并简化 → OBJ", state="normal"),
+                ))
         except Exception as e:
             tb = traceback.format_exc()
-            self.after(0, lambda: (
+            self.after(0, lambda e=e, tb=tb: (
                 self._log("A错误: " + str(e)), self._log(tb),
                 self._set_status("A失败 ✗", "#ef4444"),
                 self.run_btn.configure(text="▶ A段: 合并简化 → OBJ", state="normal"),
                 messagebox.showerror("A段失败", str(e)),
             ))
+
+    def _process_tile(self, tiles, out_obj, args, ome, pymeshlab, PureValue,
+                      osgconv, osgb_full, env, max_lod, log=None):
+        """处理一组瓦片 → 合并+简化+转轴 → 输出 OBJ (单瓦片或全部合并共用)"""
+        work = os.path.join(os.environ.get('TEMP', '/tmp'), "osgb_gui_a_work")
+        os.makedirs(work, exist_ok=True)
+        try:
+            if log: log(f"  [A1] 加载 {len(tiles)} 瓦片 (LOD={args.lod})...")
+            raw_obj = os.path.join(work, f"raw_{abs(hash(str(tiles))) % 100000}.obj")
+            loaded_v, loaded_f = ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, max_lod, env)
+            if args.faces_pct:
+                t_faces = max(100, int(loaded_f * args.faces_pct))
+            else:
+                t_faces = args.faces
+            if log: log(f"      {loaded_v:,}v {loaded_f:,}f, 目标面数={t_faces:,}")
+            merged_obj = os.path.join(work, f"merged_{abs(hash(str(tiles))) % 100000}.obj")
+            ome.merge_mesh(raw_obj, merged_obj, args.merge_thr, args.stitch_thr, True)
+            simp_obj = os.path.join(work, f"simp_{abs(hash(str(tiles))) % 100000}.obj")
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(merged_obj)
+            before_f = ms.current_mesh().face_number()
+            if t_faces > 0 and t_faces < before_f:
+                strat = {
+                    'planar': dict(planarquadric=True, qualitythr=0.3),
+                    'prob_planar': dict(planarquadric=True, qualitythr=0.1),
+                    'triangular': dict(planarquadric=False, qualitythr=0.3),
+                    'prob_triangular': dict(planarquadric=False, qualitythr=0.5),
+                }.get(args.strategy, dict(planarquadric=True, qualitythr=0.3))
+                decim_params = dict(
+                    targetfacenum=t_faces,
+                    preserveboundary=bool(args.preserve_boundary),
+                    preservenormal=bool(args.preserve_normal),
+                    optimalplacement=bool(args.optimal_placement),
+                )
+                decim_params.update(strat)
+                if getattr(args, 'quality_thr', None) is not None:
+                    decim_params['qualitythr'] = float(args.quality_thr)
+                ms.meshing_decimation_quadric_edge_collapse(**decim_params)
+                m = ms.current_mesh()
+                V = m.vertex_matrix(); F = m.face_matrix()
+                with open(simp_obj, 'w') as f:
+                    for v in V:
+                        f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+                    for tri in F:
+                        f.write(f"f {tri[0]+1} {tri[1]+1} {tri[2]+1}\n")
+                if log: log(f"      简化: {before_f} → {len(F)} 面, {len(V)} 顶点")
+            else:
+                simp_obj = merged_obj
+            # 转轴 Y-up + scale
+            _v, _f = [], []
+            for _line in open(simp_obj, encoding='utf-8', errors='replace'):
+                _p = _line.split()
+                if not _p: continue
+                if _p[0] == 'v':
+                    _v.append([float(_p[1]), float(_p[2]), float(_p[3])])
+                elif _p[0] == 'f':
+                    _idx = [int(x.split('/')[0])-1 for x in _p[1:]]
+                    if len(_idx) >= 3:
+                        _f.append(tuple(_idx[:3]))
+            _V = np.array(_v)
+            _V_rot = np.column_stack([_V[:,0], _V[:,2], -_V[:,1]])
+            if args.scale != 1.0:
+                _V_rot *= args.scale
+
+            with open(out_obj, 'w', encoding='utf-8') as _fout:
+                _fout.write("# OSGB merge+simplify, Y-up, scale=%g (A段输出, 供手动修改)\n" % args.scale)
+                for _xyz in _V_rot:
+                    _fout.write(f"v {_xyz[0]:.6f} {_xyz[1]:.6f} {_xyz[2]:.6f}\n")
+                for _row in _f:
+                    _fout.write(f"f {_row[0]+1} {_row[1]+1} {_row[2]+1}\n")
+            if log: log(f"      输出: {out_obj} ({os.path.getsize(out_obj)//1024} KB)")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     # ========== 段B 参数 / 启动 ==========
     def _collect_b_args(self):
@@ -487,59 +529,124 @@ class AppA(ctk.CTk):
             import uv_unwrap
             import texture_bake as tb
             from PIL import Image
-            work = os.path.join(os.environ.get('TEMP', '/tmp'), "osgb_gui_b_work")
-            os.makedirs(work, exist_ok=True)
-            self.progress_b.set(0.05)
-            try:
-                # B1: OSGB 提取带纹理 raw_obj (A源)
-                self.after(0, lambda: self._log("[B1] 提取 OSGB 纹理源 ..."))
-                osgconv = ome.find_osg()
-                osgb_full = os.path.join(SCRIPT_DIR, '..', 'engine', 'osgb_full.exe')
-                env = ome.osgb_env(osgconv)
-                tiles = ome.find_root_tiles(args.osgb)
-                if not tiles:
-                    raise ValueError(f"未找到 OSGB 文件: {args.osgb}")
-                raw_obj = os.path.join(work, "a_raw.obj")
-                ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, 22, env)
-                self.progress_b.set(0.3)
+            # B 输入: 单个 OBJ 文件 或 目录(批量处理所有 .obj)
+            if os.path.isdir(args.obj):
+                objs = sorted(f for f in os.listdir(args.obj) if f.lower().endswith('.obj'))
+                if not objs:
+                    raise ValueError(f"目录内没有 .obj 文件: {args.obj}")
+                self.after(0, lambda: self._log(f"[B] 批量模式: {len(objs)} 个 OBJ"))
+                ok = 0
+                for i, fn in enumerate(objs):
+                    full = os.path.join(args.obj, fn)
+                    base = os.path.splitext(fn)[0]
+                    t_out = os.path.join(args.out_dir, base + "_texture.png")
+                    self.after(0, lambda fn=fn, i=i: self._log(f"  [{i+1}/{len(objs)}] {fn}"))
+                    try:
+                        self._process_b_one(full, args, ome, uv_unwrap, tb, Image,
+                                            work_dir=os.path.join(os.environ.get('TEMP','/tmp'), f"osgb_gui_b_{i}"))
+                        ok += 1
+                    except Exception as e:
+                        self.after(0, lambda fn=fn, e=e: self._log(f"  ❌ {fn} 失败: {e}"))
+                    self.progress_b.set(0.1 + 0.9 * (i + 1) / len(objs))
+                self.after(0, lambda ok=ok, objs=objs: (
+                    self._log(f"B段批量完成! {ok}/{len(objs)} 成功"),
+                    self.progress_b.set(1),
+                    self._set_status_b("B完成 ✓", "#22c55e"),
+                    self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                ))
+            else:
+                self._process_b_one(args.obj, args, ome, uv_unwrap, tb, Image,
+                                    work_dir=os.path.join(os.environ.get('TEMP','/tmp'), "osgb_gui_b_work"))
+                self.after(0, lambda: (
+                    self._log("B段完成! 贴图烘焙输出成功"),
+                    self.progress_b.set(1),
+                    self._set_status_b("B完成 ✓", "#22c55e"),
+                    self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                ))
+        except Exception as e:
+            tb2 = traceback.format_exc()
+            self.after(0, lambda e=e, tb2=tb2: (
+                self._log("B错误: " + str(e)), self._log(tb2),
+                self._set_status_b("B失败 ✗", "#ef4444"),
+                self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                messagebox.showerror("B段失败", str(e)),
+            ))
 
-                # B2: 把 A 源转 Y-up ×scale (与用户OBJ坐标对齐) + 包围盒自动对齐
-                self.after(0, lambda: self._log("[B2] A源转 Y-up ×scale + 自动对齐 ..."))
-                # 读取用户OBJ 的 scale(从头部注释解析, 默认100)
-                user_scale = 100.0
-                try:
-                    with open(args.obj, encoding='utf-8', errors='replace') as f:
-                        for line in f:
-                            if line.startswith('#') and 'scale=' in line:
-                                import re
-                                m = re.search(r'scale=([\d.]+)', line)
-                                if m: user_scale = float(m.group(1))
-                                break
-                except Exception:
-                    pass
-                # 计算用户OBJ 包围盒中心
-                def _bbox_center(path, n=100000):
-                    xs, ys, zs = [], [], []
-                    for line in open(path, encoding='utf-8', errors='replace'):
-                        p = line.split()
-                        if p and p[0]=='v' and len(p)>=4:
-                            xs.append(float(p[1])); ys.append(float(p[2])); zs.append(float(p[3]))
-                        if len(xs) >= n: break
-                    xs, ys, zs = np.array(xs), np.array(ys), np.array(zs)
-                    return np.array([(xs.min()+xs.max())/2, (ys.min()+ys.max())/2, (zs.min()+zs.max())/2])
-                user_center = _bbox_center(args.obj)
-                # 转 A 源: 读 v → (x,z,-y)*scale, 保留 vt/f/mtllib
-                a_yup = os.path.join(work, "a_yup.obj")
-                a_pts = []
-                with open(raw_obj, encoding='utf-8', errors='replace') as fin, \
-                     open(a_yup, 'w', encoding='utf-8') as fout:
-                    for line in fin:
+    def _process_b_one(self, obj_path, args, ome, uv_unwrap, tb, Image, work_dir):
+        """处理单个 OBJ: 提取A源 → 对齐 → UV → 烘焙 → 输出贴图"""
+        import os
+        import shutil
+        import numpy as _np
+        os.makedirs(work_dir, exist_ok=True)
+        self.progress_b.set(0.05)
+        # B1: OSGB 提取带纹理 raw_obj (A源)
+        self.after(0, lambda: self._log("[B1] 提取 OSGB 纹理源 ..."))
+        osgconv = ome.find_osg()
+        osgb_full = os.path.join(SCRIPT_DIR, '..', 'engine', 'osgb_full.exe')
+        env = ome.osgb_env(osgconv)
+        tiles = ome.find_root_tiles(args.osgb)
+        if not tiles:
+            raise ValueError(f"未找到 OSGB 文件: {args.osgb}")
+        raw_obj = os.path.join(work_dir, "a_raw.obj")
+        ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, 22, env)
+
+        # B2: 把 A 源转 Y-up ×scale (与用户OBJ坐标对齐) + 包围盒自动对齐
+        self.after(0, lambda: self._log("[B2] A源转 Y-up ×scale + 自动对齐 ..."))
+        user_scale = 100.0
+        try:
+            with open(obj_path, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if line.startswith('#') and 'scale=' in line:
+                        import re
+                        m = re.search(r'scale=([\d.]+)', line)
+                        if m: user_scale = float(m.group(1))
+                        break
+        except Exception:
+            pass
+        def _bbox_center(path, n=100000):
+            xs, ys, zs = [], [], []
+            for line in open(path, encoding='utf-8', errors='replace'):
+                p = line.split()
+                if p and p[0]=='v' and len(p)>=4:
+                    xs.append(float(p[1])); ys.append(float(p[2])); zs.append(float(p[3]))
+                if len(xs) >= n: break
+            xs, ys, zs = _np.array(xs), _np.array(ys), _np.array(zs)
+            return _np.array([(xs.min()+xs.max())/2, (ys.min()+ys.max())/2, (zs.min()+zs.max())/2])
+        user_center = _bbox_center(obj_path)
+        a_yup = os.path.join(work_dir, "a_yup.obj")
+        a_pts = []
+        with open(raw_obj, encoding='utf-8', errors='replace') as fin, \
+             open(a_yup, 'w', encoding='utf-8') as fout:
+            for line in fin:
+                p = line.split()
+                if not p: continue
+                if p[0] == 'v' and len(p) >= 4:
+                    x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    nx, ny, nz = x*user_scale, z*user_scale, -y*user_scale
+                    a_pts.append([nx, ny, nz])
+                    fout.write(f"v {nx:.6f} {ny:.6f} {nz:.6f}\n")
+                elif p[0] == 'vt':
+                    fout.write(line)
+                elif p[0] == 'f':
+                    fout.write(line)
+                elif p[0] == 'mtllib' or p[0].startswith('#'):
+                    fout.write(line)
+                else:
+                    fout.write(line)
+        a_pts = _np.array(a_pts)
+        if len(a_pts) > 0:
+            a_center = _np.array([(a_pts[:,0].min()+a_pts[:,0].max())/2,
+                                  (a_pts[:,1].min()+a_pts[:,1].max())/2,
+                                  (a_pts[:,2].min()+a_pts[:,2].max())/2])
+            delta = user_center - a_center
+            if _np.max(_np.abs(delta)) > 1e-6:
+                with open(a_yup, 'w', encoding='utf-8') as fout:
+                    for line in open(raw_obj, encoding='utf-8', errors='replace'):
                         p = line.split()
                         if not p: continue
                         if p[0] == 'v' and len(p) >= 4:
                             x, y, z = float(p[1]), float(p[2]), float(p[3])
-                            nx, ny, nz = x*user_scale, z*user_scale, -y*user_scale
-                            a_pts.append([nx, ny, nz])
+                            nx, ny, nz = x*user_scale + delta[0], z*user_scale + delta[1], -y*user_scale + delta[2]
                             fout.write(f"v {nx:.6f} {ny:.6f} {nz:.6f}\n")
                         elif p[0] == 'vt':
                             fout.write(line)
@@ -549,91 +656,50 @@ class AppA(ctk.CTk):
                             fout.write(line)
                         else:
                             fout.write(line)
-                # 包围盒中心对齐: A源中心 → 用户OBJ中心
-                a_pts = np.array(a_pts)
-                if len(a_pts) > 0:
-                    a_center = np.array([(a_pts[:,0].min()+a_pts[:,0].max())/2,
-                                         (a_pts[:,1].min()+a_pts[:,1].max())/2,
-                                         (a_pts[:,2].min()+a_pts[:,2].max())/2])
-                    delta = user_center - a_center
-                    if np.max(np.abs(delta)) > 1e-6:
-                        self.after(0, lambda: self._log(
-                            f"  自动对齐: A源中心 {a_center.round(1)} → 用户 {user_center.round(1)} (平移 {delta.round(1)})"))
-                        # 重写平移后的 A 源
-                        with open(a_yup, 'w', encoding='utf-8') as fout:
-                            for line in open(raw_obj, encoding='utf-8', errors='replace'):
-                                p = line.split()
-                                if not p: continue
-                                if p[0] == 'v' and len(p) >= 4:
-                                    x, y, z = float(p[1]), float(p[2]), float(p[3])
-                                    nx, ny, nz = x*user_scale + delta[0], z*user_scale + delta[1], -y*user_scale + delta[2]
-                                    fout.write(f"v {nx:.6f} {ny:.6f} {nz:.6f}\n")
-                                elif p[0] == 'vt':
-                                    fout.write(line)
-                                elif p[0] == 'f':
-                                    fout.write(line)
-                                elif p[0] == 'mtllib' or p[0].startswith('#'):
-                                    fout.write(line)
-                                else:
-                                    fout.write(line)
-                self.progress_b.set(0.45)
+        self.progress_b.set(0.45)
 
-                # B3: UV 处理 — 用户OBJ自带UV则直接用, 否则自动分UV
-                b_uv = os.path.join(work, "b_uv.obj")
-                _has_uv = False
-                try:
-                    for _l in open(args.obj, encoding='utf-8', errors='replace'):
-                        _p = _l.split()
-                        if _p and _p[0] == 'f' and len(_p) >= 4 and '/' in _p[1]:
-                            _has_uv = True
-                            break
-                except Exception:
-                    pass
-                if _has_uv:
-                    self.after(0, lambda: self._log("[B3] 检测到用户OBJ自带UV → 直接用(Maya展的UV)"))
-                    import shutil as _sh
-                    _sh.copyfile(args.obj, b_uv)
-                else:
-                    self.after(0, lambda: self._log("[B3] 用户OBJ无UV → 自动分UV (xatlas) ..."))
-                    uv_unwrap.unwrap(args.obj, b_uv, resolution=args.uv_res, padding=4,
-                                     brute_force=False, verbose=True)
-                self.progress_b.set(0.6)
+        # B3: UV 处理 — 用户OBJ自带UV则直接用, 否则自动分UV
+        b_uv = os.path.join(work_dir, "b_uv.obj")
+        _has_uv = False
+        try:
+            for _l in open(obj_path, encoding='utf-8', errors='replace'):
+                _p = _l.split()
+                if _p and _p[0] == 'f' and len(_p) >= 4 and '/' in _p[1]:
+                    _has_uv = True
+                    break
+        except Exception:
+            pass
+        if _has_uv:
+            self.after(0, lambda: self._log("[B3] 检测到用户OBJ自带UV → 直接用"))
+            shutil.copyfile(obj_path, b_uv)
+        else:
+            self.after(0, lambda: self._log("[B3] 用户OBJ无UV → 自动分UV (xatlas) ..."))
+            uv_unwrap.unwrap(obj_path, b_uv, resolution=args.uv_res, padding=4,
+                             brute_force=False, verbose=True)
+        self.progress_b.set(0.6)
 
-                # B4: GPU 烘焙 (A源纹理 → B新UV)
-                self.after(0, lambda: self._log("[B4] GPU 纹理烘焙 ..."))
-                _cwd = os.getcwd()
-                os.chdir(os.path.dirname(a_yup))
-                _src = tb.BakeSource(os.path.basename(a_yup))
-                os.chdir(_cwd)
-                tex_png = os.path.join(work, "texture.png")
-                tb.bake(_src, b_uv, tex_png,
-                        resolution=args.tex_res, verbose=True,
-                        dilate=args.dilate, sample_step=args.step,
-                        bilinear=args.bilinear, ray_offset=args.rayoff)
-                self.progress_b.set(0.9)
+        # B4: GPU 烘焙 (A源纹理 → B新UV)
+        self.after(0, lambda: self._log("[B4] GPU 纹理烘焙 ..."))
+        _cwd = os.getcwd()
+        os.chdir(os.path.dirname(a_yup))
+        _src = tb.BakeSource(os.path.basename(a_yup))
+        os.chdir(_cwd)
+        tex_png = os.path.join(work_dir, "texture.png")
+        tb.bake(_src, b_uv, tex_png,
+                resolution=args.tex_res, verbose=True,
+                dilate=args.dilate, sample_step=args.step,
+                bilinear=args.bilinear, ray_offset=args.rayoff)
+        self.progress_b.set(0.9)
 
-                # B5: 只输出贴图(垂直翻转, 与主GUI一致)
-                self.after(0, lambda: self._log("[B5] 输出贴图 ..."))
-                img = Image.open(tex_png).transpose(Image.FLIP_TOP_BOTTOM)
-                img.save(args.tex_out)
-                size = os.path.getsize(args.tex_out) // 1024
-                self.after(0, lambda: self._log(f"  贴图输出: {args.tex_out} ({size} KB)"))
-                self.after(0, lambda: (
-                    self._log("B段完成! 贴图烘焙输出成功(分UV为内部步骤, 不输出OBJ)"),
-                    self.progress_b.set(1),
-                    self._set_status_b("B完成 ✓", "#22c55e"),
-                    self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
-                ))
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
-        except Exception as e:
-            tb = traceback.format_exc()
-            self.after(0, lambda: (
-                self._log("B错误: " + str(e)), self._log(tb),
-                self._set_status_b("B失败 ✗", "#ef4444"),
-                self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
-                messagebox.showerror("B段失败", str(e)),
-            ))
+        # B5: 只输出贴图(垂直翻转, 与主GUI一致)
+        self.after(0, lambda: self._log("[B5] 输出贴图 ..."))
+        base = os.path.splitext(os.path.basename(obj_path))[0]
+        tex_out = os.path.join(args.out_dir, base + "_texture.png")
+        img = Image.open(tex_png).transpose(Image.FLIP_TOP_BOTTOM)
+        img.save(tex_out)
+        size = os.path.getsize(tex_out) // 1024
+        self.after(0, lambda tex_out=tex_out, size=size: self._log(f"  贴图输出: {tex_out} ({size} KB)"))
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

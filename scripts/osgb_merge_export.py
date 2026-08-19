@@ -52,12 +52,25 @@ def osgb_env(osgconv):
 
 
 def find_root_tiles(input_path):
-    """返回每个瓦片的 root.osgb"""
+    """返回每个瓦片的 root.osgb
+    容错: 输入可以是工程根(含Data/) 或 Data/ 本身 或 单个瓦片目录
+    """
+    # 情况1: 输入本身就是 Data/ (其子目录是瓦片)
     data_dir = os.path.join(input_path, 'Data')
     if os.path.isdir(data_dir):
         tiles = []
         for entry in sorted(os.listdir(data_dir)):
             d = os.path.join(data_dir, entry)
+            if os.path.isdir(d):
+                root = os.path.join(d, entry + '.osgb')
+                if os.path.exists(root):
+                    tiles.append(root)
+        return tiles
+    # 情况2: 输入就是 Data/ (用户误选), 其子目录是瓦片
+    if os.path.basename(os.path.normpath(input_path)) == 'Data':
+        tiles = []
+        for entry in sorted(os.listdir(input_path)):
+            d = os.path.join(input_path, entry)
             if os.path.isdir(d):
                 root = os.path.join(d, entry + '.osgb')
                 if os.path.exists(root):
@@ -118,12 +131,45 @@ def osgb_full_load(osgb_full, osgconv, tiles, out_obj, max_lod, env):
             print(f"  [osgb_full] 单瓦片(LOD分层回退到{max_lod}) → OBJ"
                   f" (加载 {total_verts:,} 顶点, {total_faces:,} 面)")
         else:
-            # 多瓦片: osgconv 合并 (注意: osgconv 读OBJ按Y-up, 多瓦片坐标需统一)
-            merge_cmd = [osgconv] + objs + [out_obj]
-            r = subprocess.run(merge_cmd, capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', env=env)
-            if r.returncode != 0 or not os.path.exists(out_obj):
-                raise RuntimeError(f"osgconv 合并失败: {r.stderr[-200:]}")
+            # 多瓦片: Python 直接拼接 OBJ (保持 Z-up! osgconv 会按Y-up读导致轴序翻转)
+            # 每个瓦片 OBJ 的 v 直接追加, 面索引偏移累计, 保留 vt/f/mtllib
+            with open(out_obj, 'w', encoding='utf-8') as fout:
+                base = 0
+                for oi, o in enumerate(objs):
+                    with open(o, encoding='utf-8', errors='replace') as fin:
+                        for line in fin:
+                            p = line.split()
+                            if not p: continue
+                            if p[0] == 'v':
+                                fout.write(line)
+                            elif p[0] == 'vt':
+                                fout.write(line)
+                            elif p[0] == 'f':
+                                # 面索引偏移
+                                parts = line.split()
+                                new_parts = [parts[0]]
+                                for tok in parts[1:]:
+                                    if '/' in tok:
+                                        vi, rest = tok.split('/', 1)
+                                        new_parts.append(f"{int(vi)+base}/{rest}")
+                                    else:
+                                        new_parts.append(str(int(tok)+base))
+                                fout.write(' '.join(new_parts) + chr(10))
+                            elif p[0] == 'o' or p[0] == 'g':
+                                fout.write(line)
+                            elif p[0] == 'mtllib':
+                                # 多瓦片 MTL 合并: 只保留第一次(纹理已复制到同一目录)
+                                if oi == 0:
+                                    fout.write(line)
+                            elif p[0] == 'usemtl':
+                                fout.write(line)
+                    # 统计顶点数(下一瓦片偏移)
+                    nv = 0
+                    with open(o, encoding='utf-8', errors='replace') as fin:
+                        for line in fin:
+                            if line.startswith('v '):
+                                nv += 1
+                    base += nv
             print(f"  [osgb_full] 合并 {len(objs)} 瓦片(LOD分层回退到{max_lod}) → OBJ"
                   f" (加载 {total_verts:,} 顶点, {total_faces:,} 面)")
     finally:
