@@ -93,10 +93,16 @@ class App(ctk.CTk):
         self.lod.grid(row=0, column=1, sticky="ew", padx=6)
 
         ctk.CTkLabel(frame, text="顶点融合阈值:").grid(row=1, column=0, sticky="w", pady=3)
-        self.merge_ratio = ctk.CTkEntry(frame, width=120, placeholder_text="0.001")
+        self.merge_ratio = ctk.CTkEntry(frame, width=120, placeholder_text="0.022")
         self.merge_ratio.grid(row=1, column=1, sticky="w", padx=6)
-        ctk.CTkLabel(frame, text="(包围盒对角线比例; 默认0.001仅融合瓦片接缝, 过大产生空洞)",
+        ctk.CTkLabel(frame, text="(合并重复顶点距离; 默认0.022对齐OPEditor)",
                      text_color="gray", font=ctk.CTkFont(size=11)).grid(row=1, column=2, sticky="w")
+
+        ctk.CTkLabel(frame, text="边界缝合阈值:").grid(row=2, column=0, sticky="w", pady=3)
+        self.stitch_ratio = ctk.CTkEntry(frame, width=120, placeholder_text="0.2")
+        self.stitch_ratio.grid(row=2, column=1, sticky="w", padx=6)
+        ctk.CTkLabel(frame, text="(消除瓦片接缝点距离; 默认0.2, 越大缝合越多)",
+                     text_color="gray", font=ctk.CTkFont(size=11)).grid(row=2, column=2, sticky="w")
 
     # ========== 简化区 ==========
     def _build_simplify_section(self):
@@ -161,27 +167,39 @@ class App(ctk.CTk):
 
     # ========== 纹理烘焙区 ==========
     def _build_bake_section(self):
-        frame = self._section("🎨 纹理烘焙")
+        frame = self._section("🎨 纹理烘焙(GPU)")
         frame.grid_columnconfigure(1, weight=1)
 
-        self.bake = ctk.CTkCheckBox(frame, text="启用纹理烘焙", command=self._toggle_bake)
+        # GPU 烘焙开关
+        self.bake = ctk.CTkCheckBox(frame, text="纹理烘焙(GPU, 从OSGB采样到UV图集)",
+                                     command=self._toggle_bake)
         self.bake.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
 
-        # 子面板
+        # 参数面板
         self.bake_panel = ctk.CTkFrame(frame, fg_color="transparent")
         self.bake_panel.grid(row=1, column=0, columnspan=3, sticky="ew")
 
-        ctk.CTkLabel(self.bake_panel, text="纹理大小:").grid(row=0, column=0, sticky="w", pady=3)
-        self.tex_size = ctk.CTkEntry(self.bake_panel, width=120)
+        ctk.CTkLabel(self.bake_panel, text="分辨率:").grid(row=0, column=0, sticky="w", pady=3)
+        self.tex_size = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="2048")
         self.tex_size.grid(row=0, column=1, sticky="w", padx=6)
 
-        ctk.CTkLabel(self.bake_panel, text="纹理精度(texels/unit):").grid(row=1, column=0, sticky="w", pady=3)
-        self.texels_per_unit = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="")
-        self.texels_per_unit.grid(row=1, column=1, sticky="w", padx=6)
+        ctk.CTkLabel(self.bake_panel, text="采样精度:").grid(row=1, column=0, sticky="w", pady=3)
+        self.bake_step = ctk.CTkOptionMenu(self.bake_panel, width=120,
+            values=["1 (最高, 全像素)", "2 (标准)", "3 (快速)"])
+        self.bake_step.grid(row=1, column=1, sticky="w", padx=6)
 
-        ctk.CTkLabel(self.bake_panel, text="边界扩展(dilate):").grid(row=2, column=0, sticky="w", pady=3)
-        self.dilate = ctk.CTkEntry(self.bake_panel, width=120)
-        self.dilate.grid(row=2, column=1, sticky="w", padx=6)
+        ctk.CTkLabel(self.bake_panel, text="A纹理采样:").grid(row=2, column=0, sticky="w", pady=3)
+        self.bake_bilinear = ctk.CTkOptionMenu(self.bake_panel, width=120,
+            values=["双线性(平滑)", "最近邻(锐利)"])
+        self.bake_bilinear.grid(row=2, column=1, sticky="w", padx=6)
+
+        ctk.CTkLabel(self.bake_panel, text="ray偏移:").grid(row=3, column=0, sticky="w", pady=3)
+        self.bake_rayoff = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="0.0001")
+        self.bake_rayoff.grid(row=3, column=1, sticky="w", padx=6)
+
+        ctk.CTkLabel(self.bake_panel, text="接缝修复(dilate):").grid(row=4, column=0, sticky="w", pady=3)
+        self.bake_dilate = ctk.CTkEntry(self.bake_panel, width=120, placeholder_text="4")
+        self.bake_dilate.grid(row=4, column=1, sticky="w", padx=6)
 
     # ========== 输出区 ==========
     def _build_output_section(self):
@@ -204,15 +222,6 @@ class App(ctk.CTk):
                                        font=ctk.CTkFont(size=11))
         self.scale_hint.grid(row=2, column=2, sticky="w")
 
-        # 纹理烘焙(可选, 不破坏原有流程)
-        bake_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        bake_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self.bake = ctk.CTkCheckBox(bake_frame, text="纹理烘焙(GPU, 从OSGB采样到UV图集)", width=260)
-        self.bake.grid(row=0, column=0)
-        ctk.CTkLabel(bake_frame, text="分辨率:").grid(row=0, column=1, padx=(8, 2))
-        self.bake_res = ctk.CTkEntry(bake_frame, width=70, placeholder_text="2048")
-        self.bake_res.insert(0, "2048")
-        self.bake_res.grid(row=0, column=2)
 
     # ========== 操作区 ==========
     def _build_action_bar(self):
@@ -255,6 +264,7 @@ class App(ctk.CTk):
     def set_defaults(self):
         self.lod.set("L22")
         self.merge_ratio.insert(0, "0.022")
+        self.stitch_ratio.insert(0, "0.2")
         self.faces.insert(0, "10000")
         self.face_mode.set("绝对值")
         self._on_face_mode("绝对值")
@@ -272,8 +282,10 @@ class App(ctk.CTk):
         self.remesh.select()  # 默认开启布线优化
         self.quality_thr.insert(0, "0.3")
         self.tex_size.insert(0, "2048")
-        self.dilate.insert(0, "2")
-        self.texels_per_unit.insert(0, "")
+        self.bake_step.set("2 (标准)")
+        self.bake_bilinear.set("双线性(平滑)")
+        self.bake_rayoff.insert(0, "0.0001")
+        self.bake_dilate.insert(0, "4")
         self.format.set(".obj")
         self.scale.insert(0, "100")
         self._on_format(".obj")
@@ -366,7 +378,7 @@ class App(ctk.CTk):
         a.input = inp
         a.lod = self.lod.get()
         a.merge_thr = float(self.merge_ratio.get()) if self.merge_ratio.get() else 0.022
-        a.stitch_thr = 0.2
+        a.stitch_thr = float(self.stitch_ratio.get()) if self.stitch_ratio.get() else 0.2
         # 目标面数: 绝对值直接取; 百分比需加载后换算(见 _worker 第1步)
         face_val = self.faces.get().strip()
         if not face_val:
@@ -392,11 +404,13 @@ class App(ctk.CTk):
         a.bake = bool(self.bake.get())
         self._toggle_bake()  # 确保烘焙面板 state 正确(勾选时 normal)
         _ts = self.tex_size.get().strip()
-        _dl = self.dilate.get().strip()
-        _tpu = self.texels_per_unit.get().strip()
         a.bake_res = int(_ts) if _ts else 2048
-        a.dilate = int(_dl) if _dl else 2
-        a.texels_per_unit = float(_tpu) if _tpu else None
+        _dl = self.bake_dilate.get().strip()
+        a.dilate = int(_dl) if _dl else 4  # UV 接缝修复像素
+        _st = self.bake_step.get()
+        a.bake_step = 1 if "1" in _st else (3 if "3" in _st else 2)
+        a.bake_bilinear = "双线性" in self.bake_bilinear.get()
+        a.bake_rayoff = float(self.bake_rayoff.get().strip() or "0.0001")
         a.uv_mode = self.uv_mode.get()
         a.uv_resolution = int(self.uv_res.get()) if self.uv_res.get() else 2048
         uvval = self.uv_value.get().strip().lower()
@@ -481,6 +495,9 @@ class App(ctk.CTk):
                         optimalplacement=bool(args.optimal_placement),
                     )
                     decim_params.update(strat)
+                    # GUI 质量阈值覆盖策略默认(用户可调)
+                    if getattr(args, 'quality_thr', None) is not None:
+                        decim_params['qualitythr'] = float(args.quality_thr)
                     if getattr(args, 'texcoord_weight', 0) and args.texcoord_weight > 0:
                         decim_params['extratcoordw'] = float(args.texcoord_weight)
                     ms.meshing_decimation_quadric_edge_collapse(**decim_params)
@@ -524,7 +541,9 @@ class App(ctk.CTk):
                              resolution=getattr(args, 'bake_res', 2048),
                              verbose=True,
                              dilate=getattr(args, 'dilate', 4),
-                             sample_step=2)
+                             sample_step=getattr(args, 'bake_step', 2),
+                             bilinear=getattr(args, 'bake_bilinear', True),
+                             ray_offset=getattr(args, 'bake_rayoff', 1e-4))
                     args._tex_png = tex_png
                     self.after(0, lambda: self._log(f"  烘焙完成: {tex_png}"))
 

@@ -1,4 +1,5 @@
-"""texture_bake.py v5 — 真正的像素级纹理烘焙(逐 texel ray cast + A 纹理采样)
+"""texture_bake.py v6 — GPU 像素级纹理烘焙(逐 texel ray cast + A 纹理采样)
+   仅 GPU 渲染(cupy), 无 CPU fallback
 和 Maya TransferMap / Substance Painter 相同原理:
   1. B 图集每个 texel → 重心反算 3D 点 + 法线
   2. 沿 ±Z 双向 ray cast 到 A(命中 66%+)
@@ -16,7 +17,7 @@ if not os.environ.get('CUDA_PATH'):
     if os.path.exists(os.path.join(_cp, 'bin', 'cudart64_12.dll')):
         os.environ['CUDA_PATH'] = _cp
 from scipy.ndimage import binary_dilation
-# GPU 加速(可选): 无 cupy 或 GPU 时自动 fallback CPU
+# GPU 加速(必需): 纹理烘焙仅支持 GPU(cupy), 无 GPU 时报错
 try:
     import cupy as cp
     _HAS_GPU = True
@@ -69,33 +70,6 @@ class BakeSource:
                                       self.verts_list[gi][:, 2],
                                       -self.verts_list[gi][:, 1]])
                 self.verts_list[gi] = vv.astype(np.float64)
-
-    def sample_points(self, points):
-        """向量化: points (N,3) → colors (N,3) uint8
-        ±Z 双向 ray, 命中 → 按组批量纹理采样"""
-        N = len(points)
-        colors = np.zeros((N, 3), dtype=np.uint8)
-        if N == 0: return colors
-        # 分段单向 ray: +Z 先, 未命中再 -Z(比一次双向快 10 倍)
-        face_ids = np.full(N, -1, dtype=np.int64)
-        if getattr(self, 'y_up', False):
-            zplus = np.tile([0, 1, 0], (N, 1))  # Y-up: 沿 +Y
-        else:
-            zplus = np.tile([0, 0, 1], (N, 1))  # Z-up: 沿 +Z
-        idx_p = self.mesh.ray.intersects_first(points, zplus)
-        got = idx_p >= 0
-        if got.any():
-            face_ids[got] = idx_p[got]
-        if not got.all():
-            rem = ~got
-            idx_m = self.mesh.ray.intersects_first(points[rem], -zplus[rem])
-            face_ids[rem] = np.where(idx_m >= 0, idx_m, -1)
-        valid = face_ids >= 0
-        if not valid.any():
-            return colors
-        cols = self._batch_face_colors(face_ids[valid], points[valid])
-        colors[valid] = cols
-        return colors
 
     _GPU_KERNEL = r'''
 extern "C" __global__ void raycast(
@@ -155,18 +129,19 @@ extern "C" __global__ void raycast(
         cp.cuda.Stream.null.synchronize()
         return hit_g.get().astype(np.int64)
 
-    def sample_points_gpu(self, points, normals=None):
+    def sample_points_gpu(self, points, normals=None, ray_offset=1e-4, bilinear=True):
         """GPU 像素级采样: points (N,3) → colors (N,3)
         沿法线双向 ray(Maya 方式, 消除多方向条纹)"""
         N = len(points)
         colors = np.zeros((N, 3), dtype=np.uint8)
-        if N == 0 or not _HAS_GPU: return colors
+        if N == 0: return colors
         try:
             if normals is None:
                 normals = np.tile([0, 0, 1], (N, 1))
             normals = np.asarray(normals, dtype=np.float32)
-            # 沿法线双向(正向优先, 反向兜底)
-            origins = np.vstack([points, points])
+            # 沿法线双向(正向优先, 反向兜底), 偏移避免自相交
+            off = ray_offset
+            origins = np.vstack([points + normals * off, points - normals * off])
             dirs = np.vstack([normals, -normals])
             hit = self._gpu_raycast(origins, dirs)
             fwd = hit[:N].astype(np.int64)
@@ -174,13 +149,13 @@ extern "C" __global__ void raycast(
             face_ids = np.where(fwd >= 0, fwd, bwd)
             valid = face_ids >= 0
             if valid.any():
-                cols = self._batch_face_colors(face_ids[valid], points[valid])
+                cols = self._batch_face_colors(face_ids[valid], points[valid], bilinear=bilinear)
                 colors[valid] = cols
         except Exception as e:
-            print(f"GPU 失败, fallback CPU: {e}")
+            raise RuntimeError(f"GPU 纹理采样失败: {e}") from e
         return colors
 
-    def _batch_face_colors(self, face_ids, points):
+    def _batch_face_colors(self, face_ids, points, bilinear=True):
         """批量: 多个命中面+点 → 按组重心 → UV → 纹理采样(向量化)"""
         M = len(face_ids)
         out = np.zeros((M, 3), dtype=np.uint8)
@@ -225,12 +200,22 @@ extern "C" __global__ void raycast(
                     elif ni == 1: s_neg[k] = uv1[~inside][k]
                     else: s_neg[k] = uv2[~inside][k]
                 s[~inside] = s_neg
-            # UV → 像素
+            # UV → 像素 (双线性插值, 消除锯齿)
             W, H = img.size
-            pxs = np.clip((s[:, 0] * (W - 1)).astype(int), 0, W-1)
-            pys = np.clip(((1 - s[:, 1]) * (H - 1)).astype(int), 0, H-1)  # V 翻转: OBJ UV V=0底部 → 图像 V=0顶部
-            arr = np.array(img)
-            out[mask] = arr[pys, pxs]
+            fx = np.clip(s[:, 0] * (W - 1), 0, W - 1)
+            fy = np.clip((1 - s[:, 1]) * (H - 1), 0, H - 1)  # V 翻转
+            arr = np.array(img, dtype=np.float32)
+            if bilinear:
+                x0 = np.floor(fx).astype(int); y0 = np.floor(fy).astype(int)
+                x1 = np.minimum(x0 + 1, W - 1); y1 = np.minimum(y0 + 1, H - 1)
+                wx = fx - x0; wy = fy - y0
+                c00 = arr[y0, x0]; c10 = arr[y0, x1]; c01 = arr[y1, x0]; c11 = arr[y1, x1]
+                top = c00 * (1 - wx)[:, None] + c10 * wx[:, None]
+                bot = c01 * (1 - wx)[:, None] + c11 * wx[:, None]
+                out[mask] = (top * (1 - wy)[:, None] + bot * wy[:, None]).astype(np.uint8)
+            else:
+                pxs = fx.astype(int); pys = fy.astype(int)
+                out[mask] = arr[pys, pxs]
         return out
 
 
@@ -250,7 +235,7 @@ def load_simplified_obj(obj_path):
     return np.array(v), np.array(vt), np.array(f)
 
 
-def bake(src, simp_obj, out_png, resolution=1024, verbose=True, dilate=4, sample_step=2):
+def bake(src, simp_obj, out_png, resolution=1024, verbose=True, dilate=4, sample_step=2, bilinear=True, ray_offset=1e-4):
     v, vt, f = load_simplified_obj(simp_obj)
     if verbose:
         print(f"B: {len(v)}v {len(f)}f, UV {len(vt)}, 图集 {resolution}²")
@@ -302,14 +287,11 @@ def bake(src, simp_obj, out_png, resolution=1024, verbose=True, dilate=4, sample
     if verbose:
         print(f"texel 数: {len(pts)} (跳步 {sample_step})")
     _t_stage = time.time()
-    if _HAS_GPU:
-        import time as _t
-        colors = src.sample_points_gpu(pts, np.array(norm_list))
-        if verbose: print(f"  [采样] {_t.time()-_t_stage:.1f}s")
-        if (colors.sum(axis=1) > 0).sum() == 0:
-            colors = src.sample_points(pts)  # fallback
-    else:
-        colors = src.sample_points(pts)
+    if not _HAS_GPU:
+        raise RuntimeError("GPU (cupy) 不可用, 纹理烘焙需要 GPU 渲染")
+    import time as _t
+    colors = src.sample_points_gpu(pts, np.array(norm_list), ray_offset=ray_offset, bilinear=bilinear)
+    if verbose: print(f"  [采样] {_t.time()-_t_stage:.1f}s")
     nhit = (colors.sum(axis=1) > 0).sum()
     if verbose:
         print(f"采样命中: {nhit}/{len(pts)} ({nhit/len(pts):.1%})")
@@ -366,8 +348,11 @@ if __name__ == '__main__':
     ap.add_argument('simp_obj')
     ap.add_argument('out_png')
     ap.add_argument('--resolution', type=int, default=1024)
+    ap.add_argument('--sample-step', type=int, default=2, help='采样跳步(1=全分辨率)')
+    ap.add_argument('--bilinear', action='store_true', default=True, help='双线性采样')
+    ap.add_argument('--ray-offset', type=float, default=1e-4, help='ray 偏移避免自相交')
     ap.add_argument('--dilate', type=int, default=4, help='UV边缘扩散像素')
     args = ap.parse_args()
     src = BakeSource(args.source_obj)
     print(f"A: {len(src.mesh.vertices)}v, {len(src.tex_list)} 纹理组")
-    bake(src, args.simp_obj, args.out_png, args.resolution, dilate=args.dilate)
+    bake(src, args.simp_obj, args.out_png, args.resolution, dilate=args.dilate, sample_step=args.sample_step, bilinear=args.bilinear, ray_offset=args.ray_offset)
