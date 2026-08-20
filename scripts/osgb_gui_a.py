@@ -262,8 +262,9 @@ class AppA(ctk.CTk):
         bar = ctk.CTkFrame(self.content, fg_color="transparent")
         bar.grid(sticky="ew", padx=2, pady=(4, 2))
         bar.grid_columnconfigure(1, weight=1)
-        self.run_btn = ctk.CTkButton(bar, text="▶ A段: 合并简化 → OBJ", height=38,
+        self.run_btn = ctk.CTkButton(bar, text="▶ A段: 合并简化输出", width=200, height=38,
                                      font=ctk.CTkFont(size=14, weight="bold"),
+                                     fg_color="#16a34a", hover_color="#15803d",
                                      command=self.start_processing)
         self.run_btn.grid(row=0, column=0, sticky="w")
         self.progress = ctk.CTkProgressBar(bar, height=12)
@@ -274,7 +275,7 @@ class AppA(ctk.CTk):
 
     # ========== 段B: UV + 烘焙 ==========
     def _build_section_b(self):
-        frame = self._section("B. 分UV + 纹理烘焙")
+        frame = self._section("B. 纹理烘焙")
         frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(frame, text="修改后OBJ:").grid(row=0, column=0, sticky="w", pady=3)
@@ -343,9 +344,9 @@ class AppA(ctk.CTk):
         bar = ctk.CTkFrame(self.content, fg_color="transparent")
         bar.grid(sticky="ew", padx=2, pady=(4, 2))
         bar.grid_columnconfigure(1, weight=1)
-        self.run_btn_b = ctk.CTkButton(bar, text="▶ B段: 分UV + 烘焙", height=38,
+        self.run_btn_b = ctk.CTkButton(bar, text="▶ B段: 纹理烘焙输出", width=200, height=38,
                                        font=ctk.CTkFont(size=14, weight="bold"),
-                                       fg_color="#b45309", hover_color="#92400e",
+                                       fg_color="#16a34a", hover_color="#15803d",
                                        command=self.start_b_processing)
         self.run_btn_b.grid(row=0, column=0, sticky="w")
         self.progress_b = ctk.CTkProgressBar(bar, height=12)
@@ -506,14 +507,14 @@ class AppA(ctk.CTk):
                 self._log(f"A段批量完成! {ok}/{len(tiles)} 成功 — 请逐个手动修改后交给B段"),
                 self.progress.set(1),
                 self._set_status("A完成 ✓", "#22c55e"),
-                self.run_btn.configure(text="▶ A段: 合并简化 → OBJ", state="normal"),
+                self.run_btn.configure(text="▶ A段: 合并简化输出", state="normal"),
             ))
         except Exception as e:
             tb = traceback.format_exc()
             self.after(0, lambda e=e, tb=tb: (
                 self._log("A错误: " + str(e)), self._log(tb),
                 self._set_status("A失败 ✗", "#ef4444"),
-                self.run_btn.configure(text="▶ A段: 合并简化 → OBJ", state="normal"),
+                self.run_btn.configure(text="▶ A段: 合并简化输出", state="normal"),
                 messagebox.showerror("A段失败", str(e)),
             ))
 
@@ -672,7 +673,7 @@ class AppA(ctk.CTk):
                     self._log(f"B段批量完成! {ok}/{len(objs)} 成功"),
                     self.progress_b.set(1),
                     self._set_status_b("B完成 ✓", "#22c55e"),
-                    self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                    self.run_btn_b.configure(text="▶ B段: 纹理烘焙输出", state="normal"),
                 ))
             else:
                 # 单文件模式: 也自动匹配对应瓦片(只加载该瓦片, 更准)
@@ -687,14 +688,14 @@ class AppA(ctk.CTk):
                     self._log("B段完成! 贴图烘焙输出成功"),
                     self.progress_b.set(1),
                     self._set_status_b("B完成 ✓", "#22c55e"),
-                    self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                    self.run_btn_b.configure(text="▶ B段: 纹理烘焙输出", state="normal"),
                 ))
         except Exception as e:
             tb2 = traceback.format_exc()
             self.after(0, lambda e=e, tb2=tb2: (
                 self._log("B错误: " + str(e)), self._log(tb2),
                 self._set_status_b("B失败 ✗", "#ef4444"),
-                self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
+                self.run_btn_b.configure(text="▶ B段: 纹理烘焙输出", state="normal"),
                 messagebox.showerror("B段失败", str(e)),
             ))
 
