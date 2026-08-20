@@ -43,7 +43,7 @@ class ToolTip:
         self.tip.attributes("-topmost", True)
         lbl = tk.Label(self.tip, text=self.text, justify="left",
                        bg="#ffffe0", fg="#333333", relief="solid", borderwidth=1,
-                       font=("Microsoft YaHei UI", 9), padx=6, pady=3)
+                       font=("Microsoft YaHei UI", 18), padx=10, pady=6)
         lbl.pack()
 
     def _hide(self, event=None):
@@ -116,45 +116,56 @@ class AppA(ctk.CTk):
     def _build_lod_section(self):
         frame = self._section("A2. LOD 与合并")
         frame.grid_columnconfigure(0, weight=1)
-        # 横向一排: LOD层级 | 顶点融合阈值 | 边界缝合阈值 (控件撑满整行)
+        # 横向一排: LOD层级 | 顶点融合阈值 | 边界缝合阈值 (每组均分撑满)
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.grid(row=0, column=0, sticky="ew", pady=(4, 6))
-        for c in range(6):
-            row.grid_columnconfigure(c, weight=0 if c % 2 == 0 else 1)
+        for c in range(3):
+            row.grid_columnconfigure(c, weight=1)
 
-        _lbl_lod = ctk.CTkLabel(row, text="LOD 层级:")
+        g0 = ctk.CTkFrame(row, fg_color="transparent")
+        g0.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        g0.grid_columnconfigure(1, weight=1)
+        _lbl_lod = ctk.CTkLabel(g0, text="LOD 层级:")
         _lbl_lod.grid(row=0, column=0, sticky="w", pady=3)
-        self.lod = ctk.CTkOptionMenu(row, values=["root", "L16", "L17", "L18", "L19", "L20", "L21", "L22", "all"],
-                                     width=110)
-        self.lod.grid(row=0, column=1, sticky="ew", padx=(4, 16))
+        self.lod = ctk.CTkOptionMenu(g0, values=["root", "L16", "L17", "L18", "L19", "L20", "L21", "L22", "all"])
+        self.lod.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ToolTip(_lbl_lod, "加载层级: L22 最高细节; root 最粗; all 全部加载")
 
-        _lbl_mr = ctk.CTkLabel(row, text="顶点融合阈值:")
-        _lbl_mr.grid(row=0, column=2, sticky="w", pady=3, padx=(8, 0))
-        self.merge_ratio = ctk.CTkEntry(row, placeholder_text="0.022")
-        self.merge_ratio.grid(row=0, column=3, sticky="ew", padx=(4, 16))
+        g1 = ctk.CTkFrame(row, fg_color="transparent")
+        g1.grid(row=0, column=1, sticky="ew", padx=8)
+        g1.grid_columnconfigure(1, weight=1)
+        _lbl_mr = ctk.CTkLabel(g1, text="顶点融合阈值:")
+        _lbl_mr.grid(row=0, column=0, sticky="w", pady=3)
+        self.merge_ratio = ctk.CTkEntry(g1, placeholder_text="0.022")
+        self.merge_ratio.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ToolTip(_lbl_mr, "合并重复顶点距离(单位: 米); 默认 0.022 对齐 OPEditor")
 
-        _lbl_sr = ctk.CTkLabel(row, text="边界缝合阈值:")
-        _lbl_sr.grid(row=0, column=4, sticky="w", pady=3, padx=(8, 0))
-        self.stitch_ratio = ctk.CTkEntry(row, placeholder_text="0.2")
-        self.stitch_ratio.grid(row=0, column=5, sticky="ew", padx=(4, 0))
+        g2 = ctk.CTkFrame(row, fg_color="transparent")
+        g2.grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        g2.grid_columnconfigure(1, weight=1)
+        _lbl_sr = ctk.CTkLabel(g2, text="边界缝合阈值:")
+        _lbl_sr.grid(row=0, column=0, sticky="w", pady=3)
+        self.stitch_ratio = ctk.CTkEntry(g2, placeholder_text="0.2")
+        self.stitch_ratio.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ToolTip(_lbl_sr, "消除瓦片接缝点距离; 默认 0.2")
 
     def _build_simplify_section(self):
         frame = self._section("A3. 简化 (Garland-Heckbert)")
         frame.grid_columnconfigure(0, weight=1)
-        # 横向一排: 目标面数 | 质量阈值 | 边界保持 | 法线保持 | 最优位置
+        # 横向一排: 目标面数 | 质量阈值 | 边界保持 | 法线保持 | 最优位置 (每组均分撑满)
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.grid(row=0, column=0, sticky="ew", pady=(4, 6))
-        for c in range(10):
-            row.grid_columnconfigure(c, weight=0 if c % 2 == 0 else 1)
+        for c in range(5):
+            row.grid_columnconfigure(c, weight=1)
 
         # 目标面数
-        _lbl_face = ctk.CTkLabel(row, text="目标面数:")
+        g0 = ctk.CTkFrame(row, fg_color="transparent")
+        g0.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        g0.grid_columnconfigure(1, weight=1)
+        _lbl_face = ctk.CTkLabel(g0, text="目标面数:")
         _lbl_face.grid(row=0, column=0, sticky="w", pady=3)
-        fm = ctk.CTkFrame(row, fg_color="transparent")
-        fm.grid(row=0, column=1, sticky="ew", padx=(4, 14))
+        fm = ctk.CTkFrame(g0, fg_color="transparent")
+        fm.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         fm.grid_columnconfigure(1, weight=1)
         self.face_mode = ctk.CTkOptionMenu(fm, width=64, values=["绝对值", "百分比"],
                                            command=self._on_face_mode)
@@ -166,48 +177,62 @@ class AppA(ctk.CTk):
         ToolTip(self.faces, "目标面数数值, 与左侧模式配合")
 
         # 质量阈值
-        _lbl_qt = ctk.CTkLabel(row, text="质量阈值:")
-        _lbl_qt.grid(row=0, column=2, sticky="w", pady=3, padx=(8, 0))
-        self.quality_thr = ctk.CTkEntry(row, placeholder_text="0.3")
-        self.quality_thr.grid(row=0, column=3, sticky="ew", padx=(4, 14))
+        g1 = ctk.CTkFrame(row, fg_color="transparent")
+        g1.grid(row=0, column=1, sticky="ew", padx=8)
+        g1.grid_columnconfigure(1, weight=1)
+        _lbl_qt = ctk.CTkLabel(g1, text="质量阈值:")
+        _lbl_qt.grid(row=0, column=0, sticky="w", pady=3)
+        self.quality_thr = ctk.CTkEntry(g1, placeholder_text="0.3")
+        self.quality_thr.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ToolTip(_lbl_qt, "折叠质量阈值 0~1: 越小保留越多细节, 越大约束少")
 
         # 边界保持
-        self.preserve_boundary = ctk.CTkCheckBox(row, text="边界保持")
-        self.preserve_boundary.grid(row=0, column=4, sticky="w", padx=(8, 0))
+        g2 = ctk.CTkFrame(row, fg_color="transparent")
+        g2.grid(row=0, column=2, sticky="ew", padx=8)
+        g2.grid_columnconfigure(0, weight=1)
+        self.preserve_boundary = ctk.CTkCheckBox(g2, text="边界保持")
+        self.preserve_boundary.grid(row=0, column=0, sticky="w")
         ToolTip(self.preserve_boundary, "保留边界边不折叠(避免破洞)")
 
         # 法线保持
-        self.preserve_normal = ctk.CTkCheckBox(row, text="法线保持")
-        self.preserve_normal.grid(row=0, column=5, sticky="w", padx=(8, 0))
+        g3 = ctk.CTkFrame(row, fg_color="transparent")
+        g3.grid(row=0, column=3, sticky="ew", padx=8)
+        g3.grid_columnconfigure(0, weight=1)
+        self.preserve_normal = ctk.CTkCheckBox(g3, text="法线保持")
+        self.preserve_normal.grid(row=0, column=0, sticky="w")
         ToolTip(self.preserve_normal, "保留法线方向(避免表面翻转)")
 
         # 最优位置
-        self.optimal_placement = ctk.CTkCheckBox(row, text="最优位置")
-        self.optimal_placement.grid(row=0, column=6, sticky="w", padx=(8, 0))
+        g4 = ctk.CTkFrame(row, fg_color="transparent")
+        g4.grid(row=0, column=4, sticky="ew", padx=(8, 0))
+        g4.grid_columnconfigure(0, weight=1)
+        self.optimal_placement = ctk.CTkCheckBox(g4, text="最优位置")
+        self.optimal_placement.grid(row=0, column=0, sticky="w")
         ToolTip(self.optimal_placement, "边折叠后顶点取最优位置(GH 标准)")
-
-        # 剩余列留空撑开
-        row.grid_columnconfigure(7, weight=1)
-        row.grid_columnconfigure(8, weight=1)
-        row.grid_columnconfigure(9, weight=1)
 
     def _build_output_section(self):
         frame = self._section("A4. UV 分配")
         frame.grid_columnconfigure(1, weight=1)
-        # 横向一排: 自动分UV | UV分辨率
+        # 横向一排: 自动分UV | UV分辨率 (两组均分撑满)
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(4, 6))
-        row.grid_columnconfigure(3, weight=1)
+        for c in range(2):
+            row.grid_columnconfigure(c, weight=1)
 
-        self.auto_uv = ctk.CTkCheckBox(row, text="自动分UV")
+        g0 = ctk.CTkFrame(row, fg_color="transparent")
+        g0.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        g0.grid_columnconfigure(0, weight=1)
+        self.auto_uv = ctk.CTkCheckBox(g0, text="自动分UV")
         self.auto_uv.grid(row=0, column=0, sticky="w", pady=3)
         ToolTip(self.auto_uv, "勾选: 输出 OBJ 后用 xatlas 自动展 UV; 不勾选: 保持原始")
 
-        _lbl_uv = ctk.CTkLabel(row, text="UV分辨率:")
-        _lbl_uv.grid(row=0, column=1, sticky="w", pady=3, padx=(16, 0))
-        self.b_uv_res = ctk.CTkEntry(row, width=100, placeholder_text="2048")
-        self.b_uv_res.grid(row=0, column=2, sticky="w", padx=(4, 0))
+        g1 = ctk.CTkFrame(row, fg_color="transparent")
+        g1.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        g1.grid_columnconfigure(1, weight=1)
+        _lbl_uv = ctk.CTkLabel(g1, text="UV分辨率:")
+        _lbl_uv.grid(row=0, column=0, sticky="w", pady=3)
+        self.b_uv_res = ctk.CTkEntry(g1, placeholder_text="2048")
+        self.b_uv_res.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ToolTip(_lbl_uv, "xatlas 分UV 图集分辨率(像素), 默认 2048")
 
     def _build_output2_section(self):
@@ -257,45 +282,55 @@ class AppA(ctk.CTk):
         self.b_obj.grid(row=0, column=1, sticky="ew", padx=6)
         ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_b_obj).grid(row=0, column=2)
 
-        ctk.CTkLabel(frame, text="OSGB纹理源:").grid(row=1, column=0, sticky="w", pady=3)
-        self.b_osgb = ctk.CTkEntry(frame, placeholder_text="同一 OSGB 目录(与段A输入相同, 提供纹理)")
-        self.b_osgb.grid(row=1, column=1, sticky="ew", padx=6)
-        ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_b_osgb).grid(row=1, column=2)
-
-        ctk.CTkLabel(frame, text="输出目录:").grid(row=2, column=0, sticky="w", pady=3)
+        ctk.CTkLabel(frame, text="输出目录:").grid(row=1, column=0, sticky="w", pady=3)
         self.b_out = ctk.CTkEntry(frame, placeholder_text="输出 <名>_texture.png (只输出贴图)")
-        self.b_out.grid(row=2, column=1, sticky="ew", padx=6)
-        ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_b_out).grid(row=2, column=2)
+        self.b_out.grid(row=1, column=1, sticky="ew", padx=6)
+        ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_b_out).grid(row=1, column=2)
 
-        # 参数行: 横向一排 采样精度|A采样|接缝修复|ray偏移|烘焙分辨率
+        # 参数行: 横向一排 采样精度|A采样|接缝修复|ray偏移|烘焙分辨率 (每组均分撑满)
         params = ctk.CTkFrame(frame, fg_color="transparent")
         params.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
-        params.grid_columnconfigure(9, weight=1)  # 末尾弹性
+        for c in range(5):
+            params.grid_columnconfigure(c, weight=1)
 
-        ctk.CTkLabel(params, text="采样精度:").grid(row=0, column=0, sticky="w", pady=3)
-        self.b_step = ctk.CTkOptionMenu(params, width=110, values=["1 (最高)", "2 (标准)", "3 (快速)"])
-        self.b_step.grid(row=0, column=1, sticky="w", padx=(4, 12))
+        g0 = ctk.CTkFrame(params, fg_color="transparent")
+        g0.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        g0.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(g0, text="采样精度:").grid(row=0, column=0, sticky="w", pady=3)
+        self.b_step = ctk.CTkOptionMenu(g0, values=["1 (最高)", "2 (标准)", "3 (快速)"])
+        self.b_step.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ctk.CTkLabel(params, text="A采样:").grid(row=0, column=2, sticky="w", pady=3)
-        self.b_bilinear = ctk.CTkOptionMenu(params, width=120,
+        g1 = ctk.CTkFrame(params, fg_color="transparent")
+        g1.grid(row=0, column=1, sticky="ew", padx=8)
+        g1.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(g1, text="A采样:").grid(row=0, column=0, sticky="w", pady=3)
+        self.b_bilinear = ctk.CTkOptionMenu(g1,
             values=["双线性(平滑)", "最近邻(锐利)"])
-        self.b_bilinear.grid(row=0, column=3, sticky="w", padx=(4, 12))
+        self.b_bilinear.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ctk.CTkLabel(params, text="接缝修复:").grid(row=0, column=4, sticky="w", pady=3)
-        self.b_dilate = ctk.CTkEntry(params, width=80, placeholder_text="4")
-        self.b_dilate.grid(row=0, column=5, sticky="w", padx=(4, 12))
+        g2 = ctk.CTkFrame(params, fg_color="transparent")
+        g2.grid(row=0, column=2, sticky="ew", padx=8)
+        g2.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(g2, text="接缝修复:").grid(row=0, column=0, sticky="w", pady=3)
+        self.b_dilate = ctk.CTkEntry(g2, placeholder_text="4")
+        self.b_dilate.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ctk.CTkLabel(params, text="ray偏移:").grid(row=0, column=6, sticky="w", pady=3)
-        self.b_rayoff = ctk.CTkEntry(params, width=80, placeholder_text="0.0001")
-        self.b_rayoff.grid(row=0, column=7, sticky="w", padx=(4, 12))
+        g3 = ctk.CTkFrame(params, fg_color="transparent")
+        g3.grid(row=0, column=3, sticky="ew", padx=8)
+        g3.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(g3, text="ray偏移:").grid(row=0, column=0, sticky="w", pady=3)
+        self.b_rayoff = ctk.CTkEntry(g3, placeholder_text="0.0001")
+        self.b_rayoff.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ctk.CTkLabel(params, text="烘焙分辨率:").grid(row=0, column=8, sticky="w", pady=3)
-        self.b_tex_res = ctk.CTkEntry(params, width=80, placeholder_text="2048")
-        self.b_tex_res.grid(row=0, column=9, sticky="w", padx=(4, 0))
+        g4 = ctk.CTkFrame(params, fg_color="transparent")
+        g4.grid(row=0, column=4, sticky="ew", padx=(8, 0))
+        g4.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(g4, text="烘焙分辨率:").grid(row=0, column=0, sticky="w", pady=3)
+        self.b_tex_res = ctk.CTkEntry(g4, placeholder_text="2048")
+        self.b_tex_res.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         # 悬浮提示(替代灰色/橙色提示文字)
         ToolTip(self.b_obj, "修改后的 OBJ: 文件 或 目录(目录=批量烘焙所有 .obj); 需 Y-up 同坐标")
-        ToolTip(self.b_osgb, "同一 OSGB 工程目录(与段A输入相同), 提供纹理来源")
         ToolTip(self.b_out, "输出目录: <名>_texture.png (只输出贴图)")
         ToolTip(self.b_uv_res, "xatlas 分UV 图集分辨率(像素), 默认 2048")
         ToolTip(self.b_tex_res, "烘焙输出纹理分辨率(像素), 默认 2048")
@@ -357,8 +392,6 @@ class AppA(ctk.CTk):
         if p:
             self.input_path.delete(0, "end")
             self.input_path.insert(0, p)
-            if not self.b_osgb.get():
-                self.b_osgb.insert(0, p)
 
     def _browse_output(self):
         p = filedialog.askdirectory(title="选择输出目录")
@@ -377,12 +410,6 @@ class AppA(ctk.CTk):
             self.b_obj.insert(0, p)
             if not self.b_out.get():
                 self.b_out.insert(0, os.path.dirname(p) if os.path.isfile(p) else p)
-
-    def _browse_b_osgb(self):
-        p = filedialog.askdirectory(title="选择 OSGB 目录(纹理源)")
-        if p:
-            self.b_osgb.delete(0, "end")
-            self.b_osgb.insert(0, p)
 
     def _browse_b_out(self):
         p = filedialog.askdirectory(title="选择输出目录")
@@ -574,14 +601,15 @@ class AppA(ctk.CTk):
     # ========== 段B 参数 / 启动 ==========
     def _collect_b_args(self):
         bobj = self.b_obj.get().strip()
-        bosgb = self.b_osgb.get().strip()
         bout = self.b_out.get().strip()
         if not bobj or not os.path.exists(bobj):
             raise ValueError("请选择修改后的 OBJ")
-        if not bosgb or not os.path.exists(bosgb):
-            raise ValueError("请选择 OSGB 纹理源目录")
         if not bout:
             raise ValueError("请填写输出目录")
+        # OSGB 纹理源统一用 A1 的 OSGB 目录
+        bosgb = self.input_path.get().strip()
+        if not bosgb or not os.path.exists(bosgb):
+            raise ValueError("请先填写 A1 的 OSGB 目录(作为纹理源)")
         class B: pass
         b = B()
         b.obj = bobj
