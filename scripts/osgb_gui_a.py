@@ -167,7 +167,7 @@ class AppA(ctk.CTk):
         frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(frame, text="修改后OBJ:").grid(row=0, column=0, sticky="w", pady=3)
-        self.b_obj = ctk.CTkEntry(frame, placeholder_text="段A输出后手动修改的 OBJ (Y-up, 与OSGB同坐标)")
+        self.b_obj = ctk.CTkEntry(frame, placeholder_text="OBJ 文件 或 目录(选目录=批量烘焙所有 .obj; Y-up 同坐标)")
         self.b_obj.grid(row=0, column=1, sticky="ew", padx=6)
         ctk.CTkButton(frame, text="浏览", width=64, command=self._browse_b_obj).grid(row=0, column=2)
 
@@ -280,13 +280,16 @@ class AppA(ctk.CTk):
             self.output_path.insert(0, p)
 
     def _browse_b_obj(self):
-        p = filedialog.askopenfilename(title="选择修改后的 OBJ",
-                                       filetypes=[("OBJ", "*.obj")])
+        # 支持选目录(批量烘焙多个 OBJ)或单个 OBJ 文件
+        p = filedialog.askdirectory(title="选择 OBJ 目录(批量烘焙该目录所有 .obj)")
+        if not p:
+            p = filedialog.askopenfilename(title="或选择单个 OBJ 文件",
+                                           filetypes=[("OBJ", "*.obj")])
         if p:
             self.b_obj.delete(0, "end")
             self.b_obj.insert(0, p)
             if not self.b_out.get():
-                self.b_out.insert(0, os.path.dirname(p))
+                self.b_out.insert(0, os.path.dirname(p) if os.path.isfile(p) else p)
 
     def _browse_b_osgb(self):
         p = filedialog.askdirectory(title="选择 OSGB 目录(纹理源)")
@@ -534,7 +537,7 @@ class AppA(ctk.CTk):
                 objs = sorted(f for f in os.listdir(args.obj) if f.lower().endswith('.obj'))
                 if not objs:
                     raise ValueError(f"目录内没有 .obj 文件: {args.obj}")
-                self.after(0, lambda: self._log(f"[B] 批量模式: {len(objs)} 个 OBJ"))
+                self.after(0, lambda: self._log(f"[B] 批量独立瓦片烘焙: {len(objs)} 个 OBJ"))
                 ok = 0
                 for i, fn in enumerate(objs):
                     full = os.path.join(args.obj, fn)
@@ -542,8 +545,14 @@ class AppA(ctk.CTk):
                     t_out = os.path.join(args.out_dir, base + "_texture.png")
                     self.after(0, lambda fn=fn, i=i: self._log(f"  [{i+1}/{len(objs)}] {fn}"))
                     try:
+                        # 批量独立瓦片: 自动匹配 obj 对应的 OSGB 瓦片(只加载该瓦片, 更快更准)
+                        tile_dir = self._find_matching_tile(base, args.osgb)
+                        if not tile_dir:
+                            raise ValueError(f"未匹配到 OSGB 瓦片: {base}")
+                        self.after(0, lambda tile_dir=tile_dir: self._log(f"    → 匹配瓦片: {os.path.basename(tile_dir)}"))
                         self._process_b_one(full, args, ome, uv_unwrap, tb, Image,
-                                            work_dir=os.path.join(os.environ.get('TEMP','/tmp'), f"osgb_gui_b_{i}"))
+                                            work_dir=os.path.join(os.environ.get('TEMP','/tmp'), f"osgb_gui_b_{i}"),
+                                            tile_dir=tile_dir)
                         ok += 1
                     except Exception as e:
                         self.after(0, lambda fn=fn, e=e: self._log(f"  ❌ {fn} 失败: {e}"))
@@ -555,8 +564,14 @@ class AppA(ctk.CTk):
                     self.run_btn_b.configure(text="▶ B段: 分UV + 烘焙", state="normal"),
                 ))
             else:
+                # 单文件模式: 也自动匹配对应瓦片(只加载该瓦片, 更准)
+                base_single = os.path.splitext(os.path.basename(args.obj))[0]
+                tile_single = self._find_matching_tile(base_single, args.osgb)
+                if tile_single:
+                    self.after(0, lambda tile_single=tile_single: self._log(f"    → 匹配瓦片: {os.path.basename(tile_single)}"))
                 self._process_b_one(args.obj, args, ome, uv_unwrap, tb, Image,
-                                    work_dir=os.path.join(os.environ.get('TEMP','/tmp'), "osgb_gui_b_work"))
+                                    work_dir=os.path.join(os.environ.get('TEMP','/tmp'), "osgb_gui_b_work"),
+                                    tile_dir=tile_single)
                 self.after(0, lambda: (
                     self._log("B段完成! 贴图烘焙输出成功"),
                     self.progress_b.set(1),
@@ -572,8 +587,29 @@ class AppA(ctk.CTk):
                 messagebox.showerror("B段失败", str(e)),
             ))
 
-    def _process_b_one(self, obj_path, args, ome, uv_unwrap, tb, Image, work_dir):
-        """处理单个 OBJ: 提取A源 → 对齐 → UV → 烘焙 → 输出贴图"""
+    def _find_matching_tile(self, base, osgb_root):
+        """从 OBJ 名(如 Tile_034_036)匹配 OSGB 瓦片目录(如 Tile_+034_+036)
+        匹配规则: 提取数字对(去 _+ 和正负号), 在 Data/ 下找同名瓦片
+        """
+        import re
+        # 提取 obj 名中的数字对 (Tile_034_036 → 034, 036)
+        m = re.search(r'(\d+)[_+]*([+-]?\d+)', base)
+        if not m:
+            return None
+        tx, ty = m.group(1).lstrip('+'), m.group(2).lstrip('+')
+        # 在 osgb 工程 Data/ 下找匹配瓦片 (Tile_+034_+036)
+        data_dir = os.path.join(osgb_root, 'Data')
+        pat = re.compile(r'Tile[_+]*([+-]?\d+)[_+]*([+-]?\d+)')
+        for cand in os.listdir(data_dir):
+            cm = pat.search(cand)
+            if cm and cm.group(1).lstrip('+') == tx and cm.group(2).lstrip('+') == ty:
+                return os.path.join(data_dir, cand)
+        return None
+
+    def _process_b_one(self, obj_path, args, ome, uv_unwrap, tb, Image, work_dir, tile_dir=None):
+        """处理单个 OBJ: 提取A源 → 对齐 → UV → 烘焙 → 输出贴图
+        tile_dir: 指定瓦片目录时只加载该瓦片(批量独立); None 时用 args.osgb 全部
+        """
         import os
         import shutil
         import numpy as _np
@@ -584,9 +620,15 @@ class AppA(ctk.CTk):
         osgconv = ome.find_osg()
         osgb_full = os.path.join(SCRIPT_DIR, '..', 'engine', 'osgb_full.exe')
         env = ome.osgb_env(osgconv)
-        tiles = ome.find_root_tiles(args.osgb)
-        if not tiles:
-            raise ValueError(f"未找到 OSGB 文件: {args.osgb}")
+        if tile_dir is not None:
+            # 批量独立瓦片: 只加载匹配的单个瓦片
+            tiles = [os.path.join(tile_dir, os.path.basename(tile_dir) + '.osgb')]
+            if not os.path.exists(tiles[0]):
+                raise ValueError(f"瓦片根文件不存在: {tiles[0]}")
+        else:
+            tiles = ome.find_root_tiles(args.osgb)
+            if not tiles:
+                raise ValueError(f"未找到 OSGB 文件: {args.osgb}")
         raw_obj = os.path.join(work_dir, "a_raw.obj")
         ome.osgb_full_load(osgb_full, osgconv, tiles, raw_obj, 22, env)
 
