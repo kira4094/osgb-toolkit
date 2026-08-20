@@ -63,6 +63,8 @@ class BakeSource:
         for fl in self.faces_list:
             self.group_start.append(acc); acc += len(fl)
         self.face_tex_id = np.array(self.face_tex_id)
+        # 3D 栅格加速结构: 三角形按空间分桶, ray 只测命中桶的三角形
+        self._build_grid()
         if y_up:
             # 同步 verts_list(用于 _batch_face_colors 的重心/UV计算)
             for gi in range(len(self.verts_list)):
@@ -71,10 +73,63 @@ class BakeSource:
                                       -self.verts_list[gi][:, 1]])
                 self.verts_list[gi] = vv.astype(np.float64)
 
+    def _build_grid(self, cell_div=64):
+        """3D 栅格: 把三角形按包围盒分桶
+        cell_div: 每个轴分桶数(64^3 桶)
+        每个 ray 只测它穿过的桶里的三角形(替代遍历全部 M)
+        """
+        tri = self.mesh.triangles.astype(np.float64)
+        self._grid_tri = tri.reshape(-1, 9)
+        M = len(self._grid_tri)
+        # 包围盒
+        self._grid_min = tri.reshape(-1, 3).min(axis=0)
+        self._grid_max = tri.reshape(-1, 3).max(axis=0)
+        self._grid_cell = (self._grid_max - self._grid_min) / cell_div
+        self._grid_cell[self._grid_cell < 1e-9] = 1e-9
+        # 每个三角形落入哪些桶(用三角形 3 顶点的包围盒)
+        tv = tri.reshape(M, 3, 3)
+        tmin = tv.min(axis=1)  # (M,3)
+        tmax = tv.max(axis=1)
+        ci_min = np.floor((tmin - self._grid_min) / self._grid_cell).astype(np.int64)
+        ci_max = np.floor((tmax - self._grid_min) / self._grid_cell).astype(np.int64)
+        ci_min = np.clip(ci_min, 0, cell_div-1)
+        ci_max = np.clip(ci_max, 0, cell_div-1)
+        # 构建 桶→三角形 映射 (用列表, 后面转 GPU)
+        from collections import defaultdict
+        cell_tris = defaultdict(list)
+        for m in range(M):
+            for ix in range(ci_min[m,0], ci_max[m,0]+1):
+                for iy in range(ci_min[m,1], ci_max[m,1]+1):
+                    for iz in range(ci_min[m,2], ci_max[m,2]+1):
+                        key = ix * cell_div*cell_div + iy * cell_div + iz
+                        cell_tris[key].append(m)
+        # 转成固定数组: cell_start/cell_tri (CSR)
+        n_cells = cell_div**3
+        cell_start = np.zeros(n_cells+1, dtype=np.int64)
+        total = sum(len(v) for v in cell_tris.values())
+        cell_tri_arr = np.empty(total, dtype=np.int64)
+        acc = 0
+        for c in range(n_cells):
+            cell_start[c] = acc
+            if c in cell_tris:
+                cell_tri_arr[acc:acc+len(cell_tris[c])] = cell_tris[c]
+                acc += len(cell_tris[c])
+        cell_start[n_cells] = total
+        self._grid_cell_start = cell_start.astype(np.int64)
+        self._grid_cell_tri = cell_tri_arr.astype(np.int32)
+        self._grid_div = cell_div
+        self._grid_min = self._grid_min.astype(np.float32)
+        self._grid_cell = self._grid_cell.astype(np.float32)
+
     _GPU_KERNEL = r'''
+// 栅格加速 ray cast: ray 沿 3D 栅格 DDA 步进, 只测穿过的桶里的三角形
 extern "C" __global__ void raycast(
-    const float* origins, const float* dirs, const float* tri,
-    int* out_hit, float* out_t, int N, int M)
+    const float* origins, const float* dirs,
+    const float* tri,             // (M,9) 三角形
+    const long long* cell_start,  // (n_cells+1)
+    const int* cell_tri,          // 桶→三角形
+    const float* grid_min, const float* grid_cell,
+    int* out_hit, float* out_t, int N, int M, int D)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) return;
@@ -82,24 +137,66 @@ extern "C" __global__ void raycast(
     float dx = dirs[i*3], dy = dirs[i*3+1], dz = dirs[i*3+2];
     float best_t = 1e30f;
     int best_m = -1;
-    for (int m = 0; m < M; m++) {
-        float ax = tri[m*9], ay = tri[m*9+1], az = tri[m*9+2];
-        float bx = tri[m*9+3], by = tri[m*9+4], bz = tri[m*9+5];
-        float cx = tri[m*9+6], cy = tri[m*9+7], cz = tri[m*9+8];
-        float e1x = bx-ax, e1y = by-ay, e1z = bz-az;
-        float e2x = cx-ax, e2y = cy-ay, e2z = cz-az;
-        float px = dy*e2z - dz*e2y, py = dz*e2x - dx*e2z, pz = dx*e2y - dy*e2x;
-        float det = e1x*px + e1y*py + e1z*pz;
-        if (fabsf(det) < 1e-12f) continue;
-        float inv = 1.0f/det;
-        float tx = ox-ax, ty = oy-ay, tz = oz-az;
-        float u = (tx*px + ty*py + tz*pz) * inv;
-        if (u < 0.0f || u > 1.0f) continue;
-        float qx = ty*e1z - tz*e1y, qy = tz*e1x - tx*e1z, qz = tx*e1y - ty*e1x;
-        float v = (dx*qx + dy*qy + dz*qz) * inv;
-        if (v < 0.0f || u+v > 1.0f) continue;
-        float t = (e2x*qx + e2y*qy + e2z*qz) * inv;
-        if (t > 1e-4f && t < best_t) { best_t = t; best_m = m; }
+
+    // 栅格 DDA: 从起点开始, 沿方向步进访问穿过的桶
+    // 起点格
+    float gx = (ox - grid_min[0]) / grid_cell[0];
+    float gy = (oy - grid_min[1]) / grid_cell[1];
+    float gz = (oz - grid_min[2]) / grid_cell[2];
+    int ix = (int)floorf(gx);
+    int iy = (int)floorf(gy);
+    int iz = (int)floorf(gz);
+    // DDA 参数
+    float inv_dx = (fabsf(dx) > 1e-12f) ? 1.0f/dx : 1e30f;
+    float inv_dy = (fabsf(dy) > 1e-12f) ? 1.0f/dy : 1e30f;
+    float inv_dz = (fabsf(dz) > 1e-12f) ? 1.0f/dz : 1e30f;
+    int step_x = (dx > 0) ? 1 : -1;
+    int step_y = (dy > 0) ? 1 : -1;
+    int step_z = (dz > 0) ? 1 : -1;
+    float tmax_x = (dx > 0) ? ((ix+1 - gx) * inv_dx) : ((gx - ix) * inv_dx);
+    float tmax_y = (dy > 0) ? ((iy+1 - gy) * inv_dy) : ((gy - iy) * inv_dy);
+    float tmax_z = (dz > 0) ? ((iz+1 - gz) * inv_dz) : ((gz - iz) * inv_dz);
+    float tdelta_x = fabsf(inv_dx);
+    float tdelta_y = fabsf(inv_dy);
+    float tdelta_z = fabsf(inv_dz);
+
+    // 步进上限(ray 最长距离 + 安全余量)
+    float ray_len = 1e6f;
+    float t = 0.0f;
+    int guard = 0;
+    int max_steps = D * 4;  // 防止死循环
+    while (t < ray_len && guard < max_steps) {
+        guard++;
+        // 当前桶
+        if (ix >= 0 && ix < D && iy >= 0 && iy < D && iz >= 0 && iz < D) {
+            int cell = ix*D*D + iy*D + iz;
+            long long s = cell_start[cell], e = cell_start[cell+1];
+            for (long long k = s; k < e; k++) {
+                int m = cell_tri[k];
+                const float* tp = &tri[m*9];
+                float ax = tp[0], ay = tp[1], az = tp[2];
+                float bx = tp[3], by = tp[4], bz = tp[5];
+                float cx = tp[6], cy = tp[7], cz = tp[8];
+                float e1x = bx-ax, e1y = by-ay, e1z = bz-az;
+                float e2x = cx-ax, e2y = cy-ay, e2z = cz-az;
+                float px = dy*e2z - dz*e2y, py = dz*e2x - dx*e2z, pz = dx*e2y - dy*e2x;
+                float det = e1x*px + e1y*py + e1z*pz;
+                if (fabsf(det) < 1e-12f) continue;
+                float inv = 1.0f/det;
+                float tx = ox-ax, ty = oy-ay, tz = oz-az;
+                float u = (tx*px + ty*py + tz*pz) * inv;
+                if (u < 0.0f || u > 1.0f) continue;
+                float qx = ty*e1z - tz*e1y, qy = tz*e1x - tx*e1z, qz = tx*e1y - ty*e1x;
+                float v = (dx*qx + dy*qy + dz*qz) * inv;
+                if (v < 0.0f || u+v > 1.0f) continue;
+                float tt = (e2x*qx + e2y*qy + e2z*qz) * inv;
+                if (tt > 1e-4f && tt < best_t) { best_t = tt; best_m = m; }
+            }
+        }
+        // DDA 步进到下一个桶
+        if (tmax_x < tmax_y && tmax_x < tmax_z) { t = tmax_x; tmax_x += tdelta_x; ix += step_x; }
+        else if (tmax_y < tmax_z) { t = tmax_y; tmax_y += tdelta_y; iy += step_y; }
+        else { t = tmax_z; tmax_z += tdelta_z; iz += step_z; }
     }
     out_hit[i] = best_m;
     out_t[i] = (best_m >= 0) ? best_t : 1e30f;
@@ -107,17 +204,21 @@ extern "C" __global__ void raycast(
 '''
 
     def _gpu_raycast(self, origins, dirs):
-        """GPU 批量 ray cast: 返回命中面索引数组"""
+        """GPU 批量 ray cast (3D 栅格加速): 返回命中面索引数组"""
         N = len(origins)
         if N == 0: return np.full(0, -1, dtype=np.int64)
-        tri = self.mesh.triangles.astype(np.float32)  # (M,3,3) → (M,9)
-        tri_flat = tri.reshape(-1, 9)
+        tri_flat = self._grid_tri.astype(np.float32)  # (M,9)
         M = len(tri_flat)
         o_g = cp.asarray(np.ascontiguousarray(origins, dtype=np.float32).ravel())
         d_g = cp.asarray(np.ascontiguousarray(dirs, dtype=np.float32).ravel())
         t_g = cp.asarray(np.ascontiguousarray(tri_flat).ravel())
+        cs_g = cp.asarray(self._grid_cell_start)     # (n_cells+1) int64
+        ct_g = cp.asarray(self._grid_cell_tri)       # (total) int32
+        gm_g = cp.asarray(self._grid_min)            # (3) float32
+        gc_g = cp.asarray(self._grid_cell)           # (3) float32
         hit_g = cp.full(N, -1, dtype=cp.int32)
         t_out_g = cp.full(N, 1e30, dtype=cp.float32)
+        D = self._grid_div
         k = cp.RawKernel(self._GPU_KERNEL, 'raycast')
         block = 256
         BS = 65536
@@ -125,7 +226,9 @@ extern "C" __global__ void raycast(
             e = min(s+BS, N)
             n = e - s
             grid = (n + block - 1) // block
-            k((grid,), (block,), (o_g[s*3:e*3], d_g[s*3:e*3], t_g, hit_g[s:e], t_out_g[s:e], n, M))
+            k((grid,), (block,),
+              (o_g[s*3:e*3], d_g[s*3:e*3], t_g, cs_g, ct_g, gm_g, gc_g,
+               hit_g[s:e], t_out_g[s:e], n, M, D))
         cp.cuda.Stream.null.synchronize()
         return hit_g.get().astype(np.int64)
 
@@ -188,17 +291,14 @@ extern "C" __global__ void raycast(
             inside = (u >= -0.05) & (v >= -0.05) & (w >= -0.05)
             s = np.zeros((len(u), 2))
             s[inside] = (u[inside, None]*uv0[inside] + v[inside, None]*uv1[inside] + w[inside, None]*uv2[inside])
-            # 越界点: 最近顶点
+            # 越界点: 最近顶点 (向量化, 消除 Python 循环)
             if (~inside).any():
                 d0 = np.linalg.norm(proj[~inside] - v0[~inside], axis=1)
                 d1 = np.linalg.norm(proj[~inside] - v1[~inside], axis=1)
                 d2 = np.linalg.norm(proj[~inside] - v2[~inside], axis=1)
                 nearest = np.argmin(np.stack([d0, d1, d2], axis=1), axis=1)
-                s_neg = s[~inside].copy()
-                for k, ni in enumerate(nearest):
-                    if ni == 0: s_neg[k] = uv0[~inside][k]
-                    elif ni == 1: s_neg[k] = uv1[~inside][k]
-                    else: s_neg[k] = uv2[~inside][k]
+                neg_uv = np.stack([uv0[~inside], uv1[~inside], uv2[~inside]], axis=1)
+                s_neg = neg_uv[np.arange(len(nearest)), nearest]
                 s[~inside] = s_neg
             # UV → 像素 (双线性插值, 消除锯齿)
             W, H = img.size
