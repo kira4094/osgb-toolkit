@@ -36,6 +36,9 @@ class BakeSource:
                                  self.mesh.vertices[:, 2],
                                  -self.mesh.vertices[:, 1]])
             self.mesh.vertices = v.astype(np.float64)
+        # 场景中心: 用于栅格/射线坐标平移(大坐标下 float32 精度不足会漏采样)
+        # 注意: 只平移 GPU 栅格和射线几何, 颜色采样(_batch_face_colors)用绝对坐标不动
+        self.scene_center = self.mesh.vertices.mean(axis=0).astype(np.float64)
         scene = trimesh.load(obj_path, process=False)
         geoms = list(scene.geometry.items()) if hasattr(scene, 'geometry') else [('m', scene)]
         self.verts_list, self.faces_list, self.uvs_list, self.tex_list = [], [], [], []
@@ -63,6 +66,18 @@ class BakeSource:
         for fl in self.faces_list:
             self.group_start.append(acc); acc += len(fl)
         self.face_tex_id = np.array(self.face_tex_id)
+
+        # 关键: 构建"只含带纹理组"的 ray 网格(ray_verts/ray_faces)
+        # _gpu_raycast 用这个网格, 返回的 face_id 与 _batch_face_colors 的
+        # group_start/faces_list 索引完全对齐(否则含无纹理三角形时错位→黑块)
+        self.ray_verts = np.concatenate(self.verts_list) if self.verts_list else np.zeros((0,3))
+        rv = []
+        base = 0
+        for gi, f in enumerate(self.faces_list):
+            rv.append(f + base)
+            base += len(self.verts_list[gi])
+        self.ray_faces = np.concatenate(rv) if rv else np.zeros((0,3), dtype=np.int64)
+
         # 3D 栅格加速结构: 三角形按空间分桶, ray 只测命中桶的三角形
         self._build_grid()
         if y_up:
@@ -78,10 +93,15 @@ class BakeSource:
         cell_div: 每个轴分桶数(64^3 桶)
         每个 ray 只测它穿过的桶里的三角形(替代遍历全部 M)
         """
-        tri = self.mesh.triangles.astype(np.float64)
+        # 用只含带纹理组的 ray 网格(与 group_start 索引对齐)
+        vv = self.ray_verts
+        ff = self.ray_faces
+        tri = vv[ff].astype(np.float64)  # (M,3,3)
+        # 平移到原点附近(大坐标下 float32 精度不足会漏采样)
+        tri = tri - self.scene_center
         self._grid_tri = tri.reshape(-1, 9)
         M = len(self._grid_tri)
-        # 包围盒
+        # 包围盒(平移后)
         self._grid_min = tri.reshape(-1, 3).min(axis=0)
         self._grid_max = tri.reshape(-1, 3).max(axis=0)
         self._grid_cell = (self._grid_max - self._grid_min) / cell_div
@@ -164,7 +184,7 @@ extern "C" __global__ void raycast(
     float ray_len = 1e6f;
     float t = 0.0f;
     int guard = 0;
-    int max_steps = D * 4;  // 防止死循环
+    int max_steps = D * D * 2;  // 增大: 高分辨率密集采样射线可能步进很多桶(远射线/平行地面)才命中
     while (t < ray_len && guard < max_steps) {
         guard++;
         // 当前桶
@@ -207,8 +227,10 @@ extern "C" __global__ void raycast(
         """GPU 批量 ray cast (3D 栅格加速): 返回命中面索引数组"""
         N = len(origins)
         if N == 0: return np.full(0, -1, dtype=np.int64)
-        tri_flat = self._grid_tri.astype(np.float32)  # (M,9)
+        tri_flat = self._grid_tri.astype(np.float32)  # (M,9) 已平移
         M = len(tri_flat)
+        # rays 起点也平移到同一坐标系
+        origins = np.asarray(origins, dtype=np.float64) - self.scene_center
         o_g = cp.asarray(np.ascontiguousarray(origins, dtype=np.float32).ravel())
         d_g = cp.asarray(np.ascontiguousarray(dirs, dtype=np.float32).ravel())
         t_g = cp.asarray(np.ascontiguousarray(tri_flat).ravel())
@@ -234,7 +256,9 @@ extern "C" __global__ void raycast(
 
     def sample_points_gpu(self, points, normals=None, ray_offset=1e-4, bilinear=True):
         """GPU 像素级采样: points (N,3) → colors (N,3)
-        沿法线双向 ray(Maya 方式, 消除多方向条纹)"""
+        沿法线双向 + 固定上下(±Y)兜底 ray
+        开放表面大平面: 法线双向可能都打空(悬空平面下方无遮挡),
+        加固定 +Y/-Y 兜底, 覆盖地面朝上等水平大平面"""
         N = len(points)
         colors = np.zeros((N, 3), dtype=np.uint8)
         if N == 0: return colors
@@ -242,14 +266,23 @@ extern "C" __global__ void raycast(
             if normals is None:
                 normals = np.tile([0, 0, 1], (N, 1))
             normals = np.asarray(normals, dtype=np.float32)
-            # 沿法线双向(正向优先, 反向兜底), 偏移避免自相交
-            off = ray_offset
-            origins = np.vstack([points + normals * off, points - normals * off])
-            dirs = np.vstack([normals, -normals])
+            off = float(ray_offset)
+            # 四方向: 沿法线正向/反向 + 固定 +Y/-Y
+            dirs = np.vstack([normals, -normals,
+                              np.tile([0,1,0],(N,1)).astype(np.float32),
+                              np.tile([0,-1,0],(N,1)).astype(np.float32)])
+            origins = np.vstack([points + normals*off, points - normals*off,
+                                 points + np.array([0,off,0]), points + np.array([0,-off,0])])
             hit = self._gpu_raycast(origins, dirs)
             fwd = hit[:N].astype(np.int64)
-            bwd = hit[N:].astype(np.int64)
-            face_ids = np.where(fwd >= 0, fwd, bwd)
+            bwd = hit[N:2*N].astype(np.int64)
+            up = hit[2*N:3*N].astype(np.int64)
+            dn = hit[3*N:4*N].astype(np.int64)
+            # 优先级: 反向(朝表面内/下) > 正向 > 下 > 上
+            # 对开放表面多层模型(树/地面交错): 反向优先, 避免地面采样到上方树的颜色
+            face_ids = np.where(bwd >= 0, bwd, fwd)
+            face_ids = np.where(face_ids >= 0, face_ids, dn)
+            face_ids = np.where(face_ids >= 0, face_ids, up)
             valid = face_ids >= 0
             if valid.any():
                 cols = self._batch_face_colors(face_ids[valid], points[valid], bilinear=bilinear)

@@ -19,6 +19,9 @@ import os
 import shutil
 import struct
 import subprocess
+
+# 隐藏子进程控制台窗口(Windows)
+_NO_WIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 import sys
 import tempfile
 
@@ -105,7 +108,7 @@ def osgb_full_load(osgb_full, osgconv, tiles, out_obj, max_lod, env):
                 continue
             r = subprocess.run([osgb_full, tile, tmp_obj, str(max_lod)],
                                capture_output=True, text=True, encoding='utf-8',
-                               errors='replace', env=env)
+                               errors='replace', env=env, creationflags=_NO_WIN)
             if r.returncode == 0 and os.path.exists(tmp_obj):
                 objs.append(tmp_obj)
                 # 从输出解析 "Total: X vertices, Y faces"
@@ -228,7 +231,7 @@ def obj_to_fbx(osgconv, in_obj, out_fbx, env, model_name=None):
             model_name = os.path.splitext(os.path.basename(out_fbx))[0]
         r = subprocess.run([osgb_named, in_obj, out_fbx, model_name],
                            capture_output=True, text=True, encoding='utf-8',
-                           errors='replace', env=env, timeout=180)
+                           errors='replace', env=env, timeout=180, creationflags=_NO_WIN)
         if r.returncode != 0 or not os.path.exists(out_fbx):
             raise RuntimeError(f"osgb_named 导出失败: {r.stderr[-300:]}")
         if r.stdout:
@@ -238,7 +241,7 @@ def obj_to_fbx(osgconv, in_obj, out_fbx, env, model_name=None):
     else:
         # 兜底: osgconv 直接转
         r = subprocess.run([osgconv, in_obj, out_fbx], capture_output=True, text=True,
-                           encoding='utf-8', errors='replace', env=env)
+                           encoding='utf-8', errors='replace', env=env, creationflags=_NO_WIN)
         if r.returncode != 0 or not os.path.exists(out_fbx):
             raise RuntimeError(f"osgconv FBX 导出失败: {r.stderr[-300:]}")
 
